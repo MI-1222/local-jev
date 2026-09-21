@@ -12,6 +12,12 @@ from data.converters import (
     Clinc150Converter,
     MNLIConverter,
 )
+from data.dataset import (
+    JevDataset,
+    JevDynamicDataset,
+    jev_collate_fn,
+    pad_jev_collate_fn,
+)
 from data.formatter import format_prompt, tokenize_sample
 from data.prompt_pool import sample_instruction
 from data.schema import QuestionType, UnifiedSample
@@ -21,11 +27,15 @@ __all__ = [
     "Banking77Converter",
     "BaseDatasetConverter",
     "Clinc150Converter",
+    "JevDataset",
+    "JevDynamicDataset",
     "MNLIConverter",
     "QuestionType",
     "UnifiedDatasetBuilder",
     "UnifiedSample",
     "format_prompt",
+    "jev_collate_fn",
+    "pad_jev_collate_fn",
     "sample_instruction",
     "tokenize_sample",
 ]
