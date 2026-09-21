@@ -3,11 +3,20 @@
 //! TypeSafe AI の Jev 互換データ型、決定プリミティブ数理、および Serde スキーマを提供するクレート。
 //!
 //! ## 概要
-//! - Jev 互換の API スキーマ(リクエスト・レスポンス型)の定義。
-//! - 決定プリミティブ(Choice, Score, Noul)の基本型定義。
-//! - 確率較正・エントロピー確信度等の数理ユーティリティ。
+//! - Jev 互換の API スキーマ(`SystemOneRequest`, `SystemOneResponse`)の定義。
+//! - 決定プリミティブ(`Choice`, `Score`, `Noul`)の基本型定義とバリデーション。
+//! - 柔軟な `Criteria` 型(Map, List, None)のサポート。
+//! - 確率較正・エントロピー確信度等の数理計算ユーティリティ。
 
-/// ライブラリの初期化確認用関数。
+pub mod error;
+pub mod math;
+pub mod schema;
+
+pub use error::{CoreError, Result};
+pub use math::*;
+pub use schema::*;
+
+/// ライブラリのバージョン文字列を取得する。
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
