@@ -303,6 +303,25 @@ impl Answer {
             confidence: None,
         }
     }
+
+    /// ゲーティング処理等に向けた実効確信度(Effective Confidence)を取得する。
+    ///
+    /// # 概要
+    /// - Choice / Score 型の場合は、構造体に保持されている `confidence` 値をそのまま返却する。
+    /// - Noul 型の場合は、Jev 公式スキーマでは `confidence` フィールドが `None` となる規約があるため、
+    ///   真実確率 $P(\text{true})$ から尖り度 $|2P - 1.0|$ を即座に算出して返却する。
+    ///
+    /// # 戻り値
+    /// - 判定結果に対応する 0.0〜1.0 の確信度実数値。判定結果が存在しない場合は `None`。
+    pub fn effective_confidence(&self) -> Option<f64> {
+        if let Some(conf) = self.confidence {
+            return Some(conf);
+        }
+        if let Some(p) = self.noul {
+            return Some((2.0 * p - 1.0).abs().clamp(0.0, 1.0));
+        }
+        None
+    }
 }
 
 /// トークン消費量メタデータ。

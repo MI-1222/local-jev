@@ -124,9 +124,8 @@ pub fn softmax_into(logits: &[f64], out: &mut [f64], temperature: f64) -> Result
 ///
 /// # 戻り値
 /// - 成功時は計算された確率分布ベクタ(`Vec<f64>`)、異常時は `CoreError::MathError`。
-#[aquamarine::aquamarine]
 pub fn softmax(logits: &[f64], temperature: f64) -> Result<Vec<f64>> {
-    let mut probs = vec![0.0; logits.len()];
+    let mut probs: Vec<f64> = vec![0.0; logits.len()];
     softmax_into(logits, &mut probs, temperature)?;
     Ok(probs)
 }
@@ -166,6 +165,43 @@ pub fn normalized_entropy_confidence(probabilities: &[f64]) -> Result<f64> {
     Ok(confidence.clamp(0.0, 1.0))
 }
 
+/// スライス内から最大値を持つ要素のインデックスを取得する。
+///
+/// # 概要
+/// - 決定論的タイブレーク規則として、同一の最大値が複数存在する場合は「最小のインデックス(先勝ち)」を確定的に採択する。
+/// - 配列内に `NaN` が含まれている場合は `CoreError::MathError` を返却する。
+///
+/// # 引数
+/// - `values`: 探索対象の実数値スライス(`f64`)。
+///
+/// # 戻り値
+/// - 成功時は最大値のインデックス(`usize`)、配列が空または非有限値を含む場合は `CoreError::MathError`。
+pub fn argmax(values: &[f64]) -> Result<usize> {
+    if values.is_empty() {
+        return Err(CoreError::MathError {
+            message: "探索対象のスライスが空です。".to_string(),
+        });
+    }
+
+    let mut best_index = 0;
+    let mut max_val = f64::NEG_INFINITY;
+
+    for (i, &val) in values.iter().enumerate() {
+        if !val.is_finite() {
+            return Err(CoreError::MathError {
+                message: "スライス内に非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
+        // 厳密な不等号(val > max_val)を用いることで、同率値の場合は先頭インデックスを維持する。
+        if val > max_val {
+            max_val = val;
+            best_index = i;
+        }
+    }
+
+    Ok(best_index)
+}
+
 /// Score 型の確率分布から加重平均スコア実数値を算出する。
 ///
 /// 各段階レベル $k \in \{0, \dots, M-1\}$ に対して $\text{Score} = \sum k \cdot p_k$ を計算する。
@@ -178,15 +214,83 @@ pub fn expected_score(probabilities: &[f64]) -> Result<f64> {
 
     let mut score = 0.0;
     for (k, &p) in probabilities.iter().enumerate() {
+        if p < 0.0 {
+            return Err(CoreError::MathError {
+                message: format!("負の確率値が含まれています: {p}。"),
+            });
+        }
         score += (k as f64) * p;
     }
 
     Ok(score)
 }
 
-/// Noul 型のシグモイド真実確率値を算出する。
+/// Score 型の確率分布からスコアの事後分散 $\text{Var}\[S\]$ を算出する。
 ///
-/// 真と偽のロジット差分に基づき、$P(\text{true}) = \sigma((z_{\text{true}} - z_{\text{false}}) / \tau)$ を計算する。
+/// 段階レベル $k \in \{0, \dots, M-1\}$ に対し、加重平均期待値 $\hat{s} = E\[S\]$ を用いて
+/// $\text{Var}\[S\] = \sum_{k=0}^{M-1} (k - \hat{s})^2 p_k$ を計算する。
+pub fn score_variance(probabilities: &[f64]) -> Result<f64> {
+    let mean = expected_score(probabilities)?;
+
+    let mut variance = 0.0;
+    for (k, &p) in probabilities.iter().enumerate() {
+        let diff = (k as f64) - mean;
+        variance += diff * diff * p;
+    }
+
+    // 浮動小数点誤差による負数の発生を防止する。
+    Ok(variance.max(0.0))
+}
+
+/// Score 型の確率分布から、最大可能分散で正規化した確信度 $C_{\text{var}} \in [0.0, 1.0]$ を算出する。
+///
+/// # 概要
+/// - 順序尺度(Score)においてカテゴリカルエントロピーを用いると、両極端への分裂(高分散・バイモーダル)と
+///   隣接段階への分裂(低分散)を区別できず、誤った過信を招く問題がある。
+/// - 本関数では事後分散 $\text{Var}\[S\]$ を計算し、$M$ 段階における理論上の最大分散
+///   $V_{\max} = \frac{(M-1)^2}{4}$(両極端に 0.5 ずつ配分された二峰性分布)で正規化する。
+///
+/// # 数理仕様
+/// $$C_{\text{var}} = 1.0 - \frac{\text{Var}\[S\]}{V_{\max}} = 1.0 - \frac{4 \cdot \text{Var}\[S\]}{(M-1)^2}$$
+///
+/// # 引数
+/// - `probabilities`: 各段階レベルの確率分布スライス($M \ge 2$)。
+///
+/// # 戻り値
+/// - 成功時は `[0.0, 1.0]` の閉区間にクランプされた正規化確信度、不正時は `CoreError::MathError`。
+pub fn normalized_variance_confidence(probabilities: &[f64]) -> Result<f64> {
+    let m = probabilities.len();
+    if m < 2 {
+        return Err(CoreError::MathError {
+            message: "Score の確信度計算には 2 段階以上の確率分布が必要です。".to_string(),
+        });
+    }
+
+    let var = score_variance(probabilities)?;
+    let max_var = ((m - 1) as f64).powi(2) / 4.0;
+
+    if max_var <= 0.0 {
+        return Ok(1.0);
+    }
+
+    let confidence = 1.0 - (var / max_var);
+    Ok(confidence.clamp(0.0, 1.0))
+}
+
+/// Noul 型の言明真実確率値 $P(\text{true}) \in [0.0, 1.0]$ を算出する。
+///
+/// # 概要
+/// - ロジット差分 $x = (z_{\text{true}} - z_{\text{false}}) / \tau_{\text{eff}}$ に対し、
+///   符号分岐型シグモイド $\sigma(x)$ を用いることで指数オーバーフローおよびアンダーフローを完全に排除する。
+/// - $x \ge 0$ のときは $\frac{1}{1 + \exp(-x)}$、$x < 0$ のときは $\frac{\exp(x)}{1 + \exp(x)}$ を計算する。
+///
+/// # 引数
+/// - `logit_true`: 真(True)候補の生ロジット。
+/// - `logit_false`: 偽(False)候補の生ロジット。
+/// - `temperature`: 較正温度パラメータ $\tau$。正の有限実数。
+///
+/// # 戻り値
+/// - 成功時は `[0.0, 1.0]` にクランプされた真実確率、不正時は `CoreError::MathError`。
 pub fn noul_probability(logit_true: f64, logit_false: f64, temperature: f64) -> Result<f64> {
     if !temperature.is_finite() || temperature <= 0.0 {
         return Err(CoreError::MathError {
@@ -194,10 +298,40 @@ pub fn noul_probability(logit_true: f64, logit_false: f64, temperature: f64) -> 
         });
     }
 
+    if !logit_true.is_finite() || !logit_false.is_finite() {
+        return Err(CoreError::MathError {
+            message: "ロジットに非有限値(NaNまたは無限大)が含まれています。".to_string(),
+        });
+    }
+
     let effective_tau = temperature.max(1e-4);
     let diff = (logit_true - logit_false) / effective_tau;
-    let prob = 1.0 / (1.0 + (-diff).exp());
+
+    let prob = if diff >= 0.0 {
+        1.0 / (1.0 + (-diff).exp())
+    } else {
+        let exp_diff = diff.exp();
+        exp_diff / (1.0 + exp_diff)
+    };
+
     Ok(prob.clamp(0.0, 1.0))
+}
+
+/// Noul 型の真実確率から、決定の尖り度に基づく正規化確信度 $C_{\text{noul}} \in [0.0, 1.0]$ を算出する。
+///
+/// # 数理仕様
+/// $$C_{\text{noul}} = |2 \cdot P(\text{true}) - 1.0|$$
+/// - $P(\text{true}) = 0.5$(完全な迷い)のとき 0.0。
+/// - $P(\text{true}) = 1.0$ または $0.0$(完全な確信)のとき 1.0。
+pub fn noul_confidence(probability: f64) -> Result<f64> {
+    if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+        return Err(CoreError::MathError {
+            message: format!("確率は [0.0, 1.0] の有限実数である必要があります: {probability}。"),
+        });
+    }
+
+    let conf = (2.0 * probability - 1.0).abs();
+    Ok(conf.clamp(0.0, 1.0))
 }
 
 #[cfg(test)]
@@ -344,5 +478,103 @@ mod tests {
         assert!(noul_probability(1.0, 0.0, 0.0).is_err());
         assert!(noul_probability(1.0, 0.0, -1.0).is_err());
         assert!(noul_probability(1.0, 0.0, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn test_argmax() {
+        // 基本的な最大値探索
+        let values = vec![0.1, 0.8, 0.4];
+        assert_eq!(argmax(&values).unwrap(), 1);
+
+        // 決定論的タイブレーク(同率最大値の場合は先頭インデックスを採択)
+        let tied = vec![0.5, 0.9, 0.9, 0.2];
+        assert_eq!(argmax(&tied).unwrap(), 1);
+
+        // 先頭が最大値の場合
+        let first_max = vec![10.0, 5.0, 2.0];
+        assert_eq!(argmax(&first_max).unwrap(), 0);
+
+        // 末尾が最大値の場合
+        let last_max = vec![1.0, 2.0, 3.0];
+        assert_eq!(argmax(&last_max).unwrap(), 2);
+
+        // 異常系: 空スライス
+        let empty: Vec<f64> = vec![];
+        assert!(argmax(&empty).is_err());
+
+        // 異常系: NaN または Inf
+        let nan_vals = vec![1.0, f64::NAN, 2.0];
+        assert!(argmax(&nan_vals).is_err());
+        let inf_vals = vec![1.0, f64::INFINITY];
+        assert!(argmax(&inf_vals).is_err());
+    }
+
+    #[test]
+    fn test_score_variance_and_confidence() {
+        // 1. ワンホット分布(単一レベルに集中): 分散 0.0、確信度 1.0
+        let one_hot = vec![0.0, 0.0, 1.0, 0.0];
+        let var_one_hot = score_variance(&one_hot).unwrap();
+        let conf_one_hot = normalized_variance_confidence(&one_hot).unwrap();
+        assert!(var_one_hot < 1e-6);
+        assert!((conf_one_hot - 1.0).abs() < 1e-6);
+
+        // 2. 両極端に分裂した二峰性分布 [0.5, 0.0, 0.0, 0.5] (M=4)
+        // 最大可能分散 V_max = (4-1)^2 / 4 = 2.25
+        // Mean = 0 * 0.5 + 3 * 0.5 = 1.5
+        // Var = (0 - 1.5)^2 * 0.5 + (3 - 1.5)^2 * 0.5 = 2.25
+        // 確信度 C_var = 1.0 - 2.25 / 2.25 = 0.0
+        let bimodal = vec![0.5, 0.0, 0.0, 0.5];
+        let var_bimodal = score_variance(&bimodal).unwrap();
+        let conf_bimodal = normalized_variance_confidence(&bimodal).unwrap();
+        assert!((var_bimodal - 2.25).abs() < 1e-6);
+        assert!(conf_bimodal < 1e-6);
+
+        // 3. 隣接段階に分裂した低分散分布 [0.0, 0.5, 0.5, 0.0] (M=4)
+        // Mean = 1 * 0.5 + 2 * 0.5 = 1.5
+        // Var = (1 - 1.5)^2 * 0.5 + (2 - 1.5)^2 * 0.5 = 0.25
+        // 確信度 C_var = 1.0 - 0.25 / 2.25 = 1.0 - 1/9 ≈ 0.888889
+        let adjacent = vec![0.0, 0.5, 0.5, 0.0];
+        let var_adjacent = score_variance(&adjacent).unwrap();
+        let conf_adjacent = normalized_variance_confidence(&adjacent).unwrap();
+        assert!((var_adjacent - 0.25).abs() < 1e-6);
+        assert!((conf_adjacent - (8.0 / 9.0)).abs() < 1e-6);
+
+        // エントロピー確信度との対比検証:
+        // bimodal と adjacent はカテゴリカルエントロピーが完全に同一だが、
+        // 分散確信度では bimodal(0.0) と adjacent(0.889) で明確に区別される。
+        let ent_bimodal = normalized_entropy_confidence(&bimodal).unwrap();
+        let ent_adjacent = normalized_entropy_confidence(&adjacent).unwrap();
+        assert!((ent_bimodal - ent_adjacent).abs() < 1e-6);
+        assert!(conf_adjacent > conf_bimodal);
+
+        // 異常系: 段階数が 2 未満
+        let single_level = vec![1.0];
+        assert!(score_variance(&single_level).is_err());
+        assert!(normalized_variance_confidence(&single_level).is_err());
+    }
+
+    #[test]
+    fn test_noul_stability_and_confidence() {
+        // 極端なロジット差でもオーバーフロー・アンダーフローせず安定計算できることの検証
+        let prob_huge_pos = noul_probability(10000.0, 0.0, 1.0).unwrap();
+        assert!((prob_huge_pos - 1.0).abs() < 1e-6);
+
+        let prob_huge_neg = noul_probability(-10000.0, 0.0, 1.0).unwrap();
+        assert!(prob_huge_neg < 1e-6);
+
+        // 確信度計算の検証
+        // P = 0.5 -> 確信度 0.0
+        assert!((noul_confidence(0.5).unwrap() - 0.0).abs() < 1e-6);
+        // P = 1.0 -> 確信度 1.0
+        assert!((noul_confidence(1.0).unwrap() - 1.0).abs() < 1e-6);
+        // P = 0.0 -> 確信度 1.0
+        assert!((noul_confidence(0.0).unwrap() - 1.0).abs() < 1e-6);
+        // P = 0.8 -> 確信度 0.6
+        assert!((noul_confidence(0.8).unwrap() - 0.6).abs() < 1e-6);
+
+        // 異常系: 範囲外または非有限値
+        assert!(noul_confidence(-0.1).is_err());
+        assert!(noul_confidence(1.1).is_err());
+        assert!(noul_confidence(f64::NAN).is_err());
     }
 }
