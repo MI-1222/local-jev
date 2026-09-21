@@ -410,11 +410,19 @@ def _(
         )
 
         _pad_id = _tokenizer.pad_token_id if _tokenizer.pad_token_id is not None else 0
+        _max_seq_len = 2048
+        if _sft_cfg_path.is_file():
+            try:
+                _sft_data = json.loads(_sft_cfg_path.read_text(encoding="utf-8"))
+                _max_seq_len = int(_sft_data.get("max_sequence_length", 2048))
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
+
         _val_dataset = SFTDataset(
             samples=_val_samples,
             tokenizer=_tokenizer,
             op_token_id=_op_token_id,
-            max_length=512,
+            max_length=_max_seq_len,
             is_train=False,
             base_seed=42,
         )
