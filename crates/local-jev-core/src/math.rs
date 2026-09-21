@@ -577,4 +577,93 @@ mod tests {
         assert!(noul_confidence(1.1).is_err());
         assert!(noul_confidence(f64::NAN).is_err());
     }
+
+    #[test]
+    fn test_softmax_non_finite_positions() {
+        // 先頭、中間、末尾の各位置に非有限値(NaN, +Inf, -Inf)が注入された場合の捕捉を検証する。
+        let test_cases = vec![
+            vec![f64::NAN, 1.0, 2.0],
+            vec![1.0, f64::NAN, 2.0],
+            vec![1.0, 2.0, f64::NAN],
+            vec![f64::INFINITY, 1.0, 2.0],
+            vec![1.0, f64::INFINITY, 2.0],
+            vec![1.0, 2.0, f64::INFINITY],
+            vec![f64::NEG_INFINITY, 1.0, 2.0],
+            vec![1.0, f64::NEG_INFINITY, 2.0],
+            vec![1.0, 2.0, f64::NEG_INFINITY],
+        ];
+
+        for (i, case) in test_cases.iter().enumerate() {
+            let res = softmax(case, 1.0);
+            assert!(
+                res.is_err(),
+                "ケース {i} で非有限値がすり抜けました: {case:?}。"
+            );
+        }
+
+        // K=1 における非有限値の遮断を検証する。
+        assert!(softmax(&[f64::NAN], 1.0).is_err());
+        assert!(softmax(&[f64::INFINITY], 1.0).is_err());
+        assert!(softmax(&[f64::NEG_INFINITY], 1.0).is_err());
+
+        // 全要素が -Inf の場合、指数計算で分母が 0 になるため安全にエラー捕捉されることを検証する。
+        let all_neg_inf = vec![f64::NEG_INFINITY, f64::NEG_INFINITY];
+        assert!(softmax(&all_neg_inf, 1.0).is_err());
+    }
+
+    #[test]
+    fn test_softmax_mask_value_convergence() {
+        // Python 側のパディングマスク値 -1e4 が混入した場合の挙動を検証する。
+        // 有効ロジットに対してマスクされた位置の確率が厳密に 0.0 となり、
+        // かつ有効要素間の確率比率が保たれることを確認する。
+        let logits = vec![3.0, 1.0, -10000.0];
+        let probs = softmax(&logits, 1.0).unwrap();
+        assert_eq!(probs.len(), 3);
+
+        // マスク位置は 0.0 にアンダーフローして安全に収束する。
+        assert_eq!(probs[2], 0.0);
+
+        // 有効要素の和が 1.0 になる。
+        let valid_sum = probs[0] + probs[1];
+        assert!((valid_sum - 1.0).abs() < 1e-6);
+
+        // 3.0 と 1.0 の二値ソフトマックス理論値と一致する。
+        let expected_ratio = (2.0_f64).exp(); // exp(3 - 1)
+        let actual_ratio = probs[0] / probs[1];
+        assert!((actual_ratio - expected_ratio).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_argmax_non_finite_positions() {
+        // argmax において先頭、中間、末尾に非有限値が含まれる場合にエラーとなることを検証する。
+        let test_cases = vec![
+            vec![f64::NAN, 0.5, 0.2],
+            vec![0.5, f64::NAN, 0.2],
+            vec![0.5, 0.2, f64::NAN],
+            vec![f64::INFINITY, 0.5, 0.2],
+            vec![0.5, f64::INFINITY, 0.2],
+            vec![0.5, 0.2, f64::INFINITY],
+            vec![f64::NEG_INFINITY, 0.5, 0.2],
+            vec![0.5, f64::NEG_INFINITY, 0.2],
+            vec![0.5, 0.2, f64::NEG_INFINITY],
+        ];
+
+        for (i, case) in test_cases.iter().enumerate() {
+            assert!(
+                argmax(case).is_err(),
+                "argmax ケース {i} で非有限値がすり抜けました: {case:?}。"
+            );
+        }
+    }
+
+    #[test]
+    fn test_noul_non_finite_inputs() {
+        // noul_probability の真偽ロジットに非有限値が渡された場合の拒絶を検証する。
+        assert!(noul_probability(f64::NAN, 0.0, 1.0).is_err());
+        assert!(noul_probability(0.0, f64::NAN, 1.0).is_err());
+        assert!(noul_probability(f64::INFINITY, 0.0, 1.0).is_err());
+        assert!(noul_probability(0.0, f64::INFINITY, 1.0).is_err());
+        assert!(noul_probability(f64::NEG_INFINITY, 0.0, 1.0).is_err());
+        assert!(noul_probability(0.0, f64::NEG_INFINITY, 1.0).is_err());
+    }
 }
