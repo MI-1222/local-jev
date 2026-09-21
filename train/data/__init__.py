@@ -19,10 +19,12 @@ from data.dataset import (
     pad_jev_collate_fn,
 )
 from data.formatter import format_prompt, tokenize_sample
+from data.negative_sampler import NEGATIVE_OPTION_POOL, SyntheticNegativeInjector
 from data.prompt_pool import sample_instruction
 from data.schema import QuestionType, UnifiedSample
 
 __all__ = [
+    "NEGATIVE_OPTION_POOL",
     "AGNewsConverter",
     "Banking77Converter",
     "BaseDatasetConverter",
@@ -31,6 +33,7 @@ __all__ = [
     "JevDynamicDataset",
     "MNLIConverter",
     "QuestionType",
+    "SyntheticNegativeInjector",
     "UnifiedDatasetBuilder",
     "UnifiedSample",
     "format_prompt",

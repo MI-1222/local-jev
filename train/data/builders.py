@@ -14,6 +14,7 @@ from data.converters.banking77 import Banking77Converter
 from data.converters.base import BaseDatasetConverter
 from data.converters.clinc150 import Clinc150Converter
 from data.converters.mnli import MNLIConverter
+from data.negative_sampler import SyntheticNegativeInjector
 from data.schema import UnifiedSample
 
 logger = logging.getLogger(__name__)
@@ -24,15 +25,21 @@ class UnifiedDatasetBuilder:
 
     Attributes:
         converters (dict[str, BaseDatasetConverter]): 登録済みコンバータマップ。
+        negative_injector (SyntheticNegativeInjector): 合成ネガティブ混入器。
     """
 
-    def __init__(self, seed: int = 42) -> None:
+    def __init__(self, seed: int = 42, negative_ratio: float = 0.15) -> None:
         """ビルダーを初期化し、標準コンバータを登録する。
 
         Args:
             seed (int): 乱数シード。
+            negative_ratio (float): train スプリット結合時に混入する合成ネガティブ比率。
         """
         self.seed = seed
+        self.negative_ratio = negative_ratio
+        self.negative_injector = SyntheticNegativeInjector(
+            negative_ratio=negative_ratio, seed=seed
+        )
         self.converters: dict[str, BaseDatasetConverter] = {
             "banking77": Banking77Converter(seed=seed),
             "clinc150": Clinc150Converter(seed=seed),
@@ -101,23 +108,32 @@ class UnifiedDatasetBuilder:
         dataset_names: list[str] | None = None,
         split: str = "train",
         max_samples_per_dataset: int | None = None,
+        inject_negatives: bool = True,
     ) -> Dataset:
         """指定データセット群を走査・変換し、結合された単一の Hugging Face Dataset を構築する。
+
+        train スプリット時は inject_negatives が真であれば合成ネガティブサンプルが混入される。
 
         Args:
             dataset_names (list[str] | None): 対象データセット名リスト。
             split (str): スプリット名。
             max_samples_per_dataset (int | None): データセットごとの最大取得件数。
+            inject_negatives (bool): 合成ネガティブ混入器を適用するかどうか (デフォルト: True)。
 
         Returns:
             Dataset: 全サンプルの辞書列から構成された統合 Dataset。
         """
-        samples = [
-            sample.to_dict()
-            for sample in self.stream_samples(
+        raw_samples = list(
+            self.stream_samples(
                 dataset_names=dataset_names,
                 split=split,
                 max_samples_per_dataset=max_samples_per_dataset,
             )
-        ]
-        return Dataset.from_list(samples)
+        )
+
+        if inject_negatives:
+            final_samples = self.negative_injector.inject(raw_samples, split=split)
+        else:
+            final_samples = raw_samples
+
+        return Dataset.from_list([sample.to_dict() for sample in final_samples])
