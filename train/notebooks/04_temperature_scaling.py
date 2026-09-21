@@ -273,11 +273,13 @@ def _(
 
         ckpt_dir = Path(active_config.checkpoint_path)
         base_model_id = "answerdotai/ModernBERT-base"
+        max_seq_len = 8192
         sft_cfg_path = ckpt_dir.parent / "config.json"
         if sft_cfg_path.exists():
             try:
                 sft_data = json.loads(sft_cfg_path.read_text(encoding="utf-8"))
                 base_model_id = sft_data.get("model_name_or_path", base_model_id)
+                max_seq_len = int(sft_data.get("max_sequence_length", 8192))
             except (json.JSONDecodeError, OSError):
                 pass
 
@@ -311,7 +313,7 @@ def _(
             samples=val_samples,
             tokenizer=tokenizer,
             op_token_id=op_token_id,
-            max_length=512,
+            max_length=max_seq_len,
             is_train=False,
             base_seed=active_config.seed,
         )

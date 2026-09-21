@@ -17,6 +17,7 @@ from data.schema import QuestionType, UnifiedSample
 
 # 代表的ラベルの自然言語説明辞書 (未指定ラベルはアンダースコア置換でフォールバック)
 BANKING77_LABEL_DESCRIPTIONS: dict[str, str] = {
+    "Refund_not_showing_up": "Reporting a missing or delayed merchant refund not appearing on account",
     "activate_my_card": "Activating a newly received debit or credit card",
     "age_limit": "Inquiring about age requirements and eligibility limits",
     "apple_pay_or_google_pay": "Setting up or troubleshooting Apple Pay or Google Pay",
@@ -46,6 +47,7 @@ BANKING77_LABEL_DESCRIPTIONS: dict[str, str] = {
     "declined_cash_withdrawal": "Investigating why an ATM cash withdrawal was declined",
     "declined_transfer": "Investigating why a bank transfer was rejected or declined",
     "direct_debit_payment_not_recognised": "Reporting an unrecognized direct debit withdrawal",
+    "disposable_card_limits": "Inquiring about single-use disposable card spending or transaction limits",
     "disposable_virtual_card": "Creating or using single-use disposable virtual cards",
     "edit_personal_details": "Updating user address, phone number, or profile details",
     "exchange_charge": "Fees associated with currency exchange transactions",
@@ -69,6 +71,7 @@ BANKING77_LABEL_DESCRIPTIONS: dict[str, str] = {
     "pin_blocked": "Unblocking card PIN after entering incorrect numbers repeatedly",
     "receiving_money": "Instructions on receiving domestic and international transfers",
     "request_refund": "Requesting a refund or chargeback for an eligible transaction",
+    "reverted_card_payment?": "Clarification on reverted or refunded card authorizations",
     "reverted_card_payment_": "Clarification on reverted or refunded card authorizations",
     "supported_cards_and_currencies": "Supported card networks (Visa, Mastercard) and currency pairs",
     "terminate_account": "Procedure and requirements for closing or terminating the bank account",
@@ -151,6 +154,8 @@ class Banking77Converter(BaseDatasetConverter):
         features: Any = dataset.features.get("label")
         if isinstance(features, ClassLabel) and features.names:
             raw_label_names: list[str] = list(features.names)
+        elif "label_text" in dataset.column_names:
+            raw_label_names = sorted(set(dataset["label_text"]))
         else:
             raw_label_names = list(BANKING77_LABEL_DESCRIPTIONS.keys())
 
@@ -183,6 +188,9 @@ class Banking77Converter(BaseDatasetConverter):
                     if raw_label_names
                     else list(all_descriptions.keys())
                 )
+
+            if target_id not in candidate_ids:
+                candidate_ids.append(target_id)
 
             criteria = {
                 cid: all_descriptions.get(cid, clean_banking77_label(cid))
