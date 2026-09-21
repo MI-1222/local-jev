@@ -4,4 +4,18 @@ version = "0.1.0"
 description = "Jev train"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "accelerate>=1.15.0",
+    "datasets>=5.0.1",
+    "marimo>=0.24.2",
+    "onnx>=1.23.0",
+    "onnxruntime>=1.30.0",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.8",
+    "ty>=0.0.82",
+]
