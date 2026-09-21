@@ -6,6 +6,18 @@
 from training.config import SFTConfig
 from training.loss import MaskedCrossEntropyLoss, compute_masked_loss
 from training.metrics import MetricsTracker
+from training.rlcd_config import RLCDConfig
+from training.rlcd_loss import (
+    RLCDLoss,
+    compute_entropy,
+    compute_group_advantages,
+    compute_masked_kl_divergence,
+    sample_perturbed_logits,
+)
+from training.rlcd_trainer import (
+    RLCDTrainer,
+    compute_expected_calibration_error,
+)
 from training.scoring import (
     ProperScoringEvaluator,
     ProperScoringLoss,
@@ -23,15 +35,23 @@ __all__ = [
     "MetricsTracker",
     "ProperScoringEvaluator",
     "ProperScoringLoss",
+    "RLCDConfig",
+    "RLCDLoss",
+    "RLCDTrainer",
     "SFTConfig",
     "SFTDataset",
     "SFTTrainer",
     "ScoringConfig",
     "compute_bounded_log_score",
     "compute_composite_scores",
+    "compute_entropy",
+    "compute_expected_calibration_error",
+    "compute_group_advantages",
+    "compute_masked_kl_divergence",
     "compute_masked_loss",
     "compute_ranked_probability_score",
     "compute_spherical_score",
     "get_normalized_probabilities",
+    "sample_perturbed_logits",
     "sft_collate_fn",
 ]
