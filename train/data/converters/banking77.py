@@ -148,17 +148,23 @@ class Banking77Converter(BaseDatasetConverter):
             Iterator[UnifiedSample]: 変換後の統一サンプル列。
         """
         rng = random.Random(self.seed)
-        features: Any = dataset.features["label"]
-        raw_label_names: list[str] = (
-            features.names if isinstance(features, ClassLabel) else []
-        )
+        features: Any = dataset.features.get("label")
+        if isinstance(features, ClassLabel) and features.names:
+            raw_label_names: list[str] = list(features.names)
+        else:
+            raw_label_names = list(BANKING77_LABEL_DESCRIPTIONS.keys())
 
         all_descriptions = {lbl: clean_banking77_label(lbl) for lbl in raw_label_names}
 
         for idx, row in enumerate(dataset):
-            target_id = (
-                raw_label_names[row["label"]] if raw_label_names else str(row["label"])
-            )
+            if row.get("label_text"):
+                target_id = str(row["label_text"])
+            elif isinstance(row["label"], int) and 0 <= row["label"] < len(
+                raw_label_names
+            ):
+                target_id = raw_label_names[row["label"]]
+            else:
+                target_id = str(row["label"])
             text = row["text"]
 
             # 訓練時かつ max_negative_options が指定されている場合は負例をサンプリング
@@ -202,12 +208,20 @@ class Banking77Converter(BaseDatasetConverter):
     def convert_split(self, split: str) -> Iterator[UnifiedSample]:
         """Hugging Face から Banking77 をロードして変換する。
 
+        Parquet 形式の mteb/banking77 を優先してロードし、
+        レガシースクリプト非推奨環境 (datasets>=5.0) に対応する。
+        Banking77 は検証スプリットを持たないため、validation 指定時は test を使用する。
+
         Args:
             split (str): スプリット名。
 
         Yields:
             Iterator[UnifiedSample]: 統一サンプル列。
         """
-        ds = load_dataset("PolyAI/banking77", split=split)
+        hf_split = "test" if split in ["validation", "val"] else split
+        try:
+            ds = load_dataset("mteb/banking77", split=hf_split)
+        except (RuntimeError, ValueError, OSError):
+            ds = load_dataset("PolyAI/banking77", split=hf_split)
         assert isinstance(ds, Dataset)
         yield from self.convert_dataset(ds, split=split)

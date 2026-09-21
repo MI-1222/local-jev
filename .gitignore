@@ -4,6 +4,7 @@
 # python
 .venv
 *.pyc
+__marimo__/
 
 # mac
 .DS_Store

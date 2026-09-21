@@ -114,12 +114,19 @@ class MNLIConverter(BaseDatasetConverter):
     def convert_split(self, split: str) -> Iterator[UnifiedSample]:
         """Hugging Face から MNLI をロードして変換する。
 
+        MNLI は 'validation' という名前のスプリットを持たないため、
+        validation 指定時は 'validation_matched' をマッピングする。
+
         Args:
-            split (str): スプリット名 ('train', 'validation_matched', 'validation_mismatched')。
+            split (str): スプリット名 ('train', 'validation', 'validation_matched', etc.)。
 
         Yields:
             Iterator[UnifiedSample]: 統一サンプル列。
         """
-        ds = load_dataset("glue", "mnli", split=split)
+        hf_split = "validation_matched" if split in ["validation", "val"] else split
+        try:
+            ds = load_dataset("nyu-mll/glue", "mnli", split=hf_split)
+        except (RuntimeError, ValueError, OSError):
+            ds = load_dataset("glue", "mnli", split=hf_split)
         assert isinstance(ds, Dataset)
         yield from self.convert_dataset(ds, split=split)

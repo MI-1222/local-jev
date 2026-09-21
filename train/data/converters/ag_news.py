@@ -65,12 +65,18 @@ class AGNewsConverter(BaseDatasetConverter):
     def convert_split(self, split: str) -> Iterator[UnifiedSample]:
         """Hugging Face から AG News をロードして変換する。
 
+        AG News は検証スプリットを持たないため、validation 指定時は test を使用する。
+
         Args:
-            split (str): スプリット名 ('train', 'test')。
+            split (str): スプリット名 ('train', 'test', 'validation')。
 
         Yields:
             Iterator[UnifiedSample]: 統一サンプル列。
         """
-        ds = load_dataset("ag_news", split=split)
+        hf_split = "test" if split in ["validation", "val"] else split
+        try:
+            ds = load_dataset("fancyzhx/ag_news", split=hf_split)
+        except (RuntimeError, ValueError, OSError):
+            ds = load_dataset("ag_news", split=hf_split)
         assert isinstance(ds, Dataset)
         yield from self.convert_dataset(ds, split=split)

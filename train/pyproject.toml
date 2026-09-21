@@ -12,6 +12,7 @@ dependencies = [
     "onnxruntime>=1.30.0",
     "torch>=2.14.0",
     "transformers>=5.17.0",
+    "pyyaml>=6.0.2",
 ]
 
 [dependency-groups]
@@ -25,3 +26,6 @@ dev = [
 markers = [
     "slow: 実行時間が長いテスト",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"notebooks/*" = ["B018"]
