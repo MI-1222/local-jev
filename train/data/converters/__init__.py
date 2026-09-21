@@ -9,6 +9,7 @@ from data.converters.banking77 import Banking77Converter
 from data.converters.base import BaseDatasetConverter
 from data.converters.clinc150 import Clinc150Converter
 from data.converters.mnli import MNLIConverter
+from data.converters.sst5 import SST5Converter
 
 __all__ = [
     "AGNewsConverter",
@@ -16,4 +17,5 @@ __all__ = [
     "BaseDatasetConverter",
     "Clinc150Converter",
     "MNLIConverter",
+    "SST5Converter",
 ]

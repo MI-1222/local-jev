@@ -14,6 +14,7 @@ from data.converters.banking77 import Banking77Converter
 from data.converters.base import BaseDatasetConverter
 from data.converters.clinc150 import Clinc150Converter
 from data.converters.mnli import MNLIConverter
+from data.converters.sst5 import SST5Converter
 from data.negative_sampler import SyntheticNegativeInjector
 from data.schema import UnifiedSample
 
@@ -46,6 +47,7 @@ class UnifiedDatasetBuilder:
             "mnli_choice": MNLIConverter(mode="choice", seed=seed),
             "mnli_noul": MNLIConverter(mode="noul", seed=seed),
             "ag_news": AGNewsConverter(seed=seed),
+            "sst5": SST5Converter(seed=seed),
         }
 
     def register_converter(self, name: str, converter: BaseDatasetConverter) -> None:

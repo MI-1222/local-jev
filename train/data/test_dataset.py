@@ -93,13 +93,13 @@ def test_jev_dataset_score_no_shuffling(modernbert_tokenizer_and_op) -> None:
         state="The customer service was terribly slow and unhelpful.",
         instructions="深刻度を1から5で判定せよ。",
         criteria={
-            "1": "非常に不満 (極めて深刻)",
-            "2": "不満 (問題あり)",
-            "3": "普通 (平均的)",
-            "4": "満足 (良好)",
-            "5": "大変満足 (素晴らしい)",
+            "0": "非常に不満 (極めて深刻)",
+            "1": "不満 (問題あり)",
+            "2": "普通 (平均的)",
+            "3": "満足 (良好)",
+            "4": "大変満足 (素晴らしい)",
         },
-        target="1",
+        target="0",
     )
 
     dataset = JevDataset(

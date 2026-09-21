@@ -45,11 +45,25 @@ NOUL_VERIFICATION_TEMPLATES: list[str] = [
     "前提記述と突き合わせ、言明「{hypothesis}」の妥当性を評価せよ。",
 ]
 
+# 順序尺度・段階評価(Score型)向け指示文テンプレート
+SCORE_RATING_TEMPLATES: list[str] = [
+    "提示されたテキストの満足度・感情の度合いを指定の段階で評価せよ。",
+    "テキスト全体のトーンや印象を分析し、最も合致する評価段階を特定せよ。",
+    "レビュー内容を精査し、その評価レベルを基準に従って段階的に判定せよ。",
+    "記述された意見や感想の肯定・否定の強さを適切に評価せよ。",
+    "提示文の感情極性および温度感を評価基準に沿って判定せよ。",
+    "文章のニュアンスを総合的に評価し、該当する段階を選択せよ。",
+    "テキストが示す満足度・評価の度合いを、基準に従って1つ決定せよ。",
+    "提示された文章の評価度合いを分析し、最適な段階尺度を特定せよ。",
+]
+
 TEMPLATES_BY_CATEGORY: dict[str, list[str]] = {
     "intent": INTENT_CLASSIFICATION_TEMPLATES,
     "topic": TOPIC_CLASSIFICATION_TEMPLATES,
     "nli_choice": NLI_CHOICE_TEMPLATES,
     "noul": NOUL_VERIFICATION_TEMPLATES,
+    "score": SCORE_RATING_TEMPLATES,
+    "rating": SCORE_RATING_TEMPLATES,
 }
 
 

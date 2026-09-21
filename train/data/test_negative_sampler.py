@@ -65,15 +65,15 @@ def _create_dummy_score_sample(sample_id: str) -> UnifiedSample:
     Returns:
         UnifiedSample: 生成されたサンプル。
     """
-    criteria = {str(i): f"{i}点" for i in range(1, 6)}
+    criteria = {str(i): f"{i}点" for i in range(5)}
     return UnifiedSample(
         dataset_name="dummy_score",
         sample_id=sample_id,
         question_type=QuestionType.SCORE,
         state=f"評価対象テキスト_{sample_id}。",
-        instructions="1から5段階で評価せよ。",
+        instructions="0から4段階で評価せよ。",
         criteria=criteria,
-        target="3",
+        target="2",
         metadata={"original_id": sample_id},
     )
 

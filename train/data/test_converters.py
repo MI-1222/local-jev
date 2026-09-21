@@ -7,6 +7,7 @@ from data.converters.ag_news import AGNewsConverter
 from data.converters.banking77 import Banking77Converter, clean_banking77_label
 from data.converters.clinc150 import Clinc150Converter
 from data.converters.mnli import MNLIConverter
+from data.converters.sst5 import SST5Converter
 from data.prompt_pool import sample_instruction
 from data.schema import QuestionType, UnifiedSample
 
@@ -189,3 +190,134 @@ def test_prompt_pool_sampling() -> None:
 
     noul_inst = sample_instruction("noul", hypothesis="テスト言明")
     assert "テスト言明" in noul_inst
+
+    score_inst = sample_instruction("score")
+    assert isinstance(score_inst, str)
+    assert len(score_inst) > 0
+
+    rating_inst = sample_instruction("rating")
+    assert isinstance(rating_inst, str)
+    assert len(rating_inst) > 0
+
+
+def test_unified_sample_validation_score() -> None:
+    """Score 型のバリデーションテスト。"""
+    # 正常系 (5段階)
+    criteria_5 = {str(i): f"レベル{i}" for i in range(5)}
+    sample = UnifiedSample(
+        dataset_name="test_score",
+        sample_id="score_1",
+        question_type=QuestionType.SCORE,
+        state="評価対象テキスト。",
+        instructions="段階を評価せよ。",
+        criteria=criteria_5,
+        target="3",
+    )
+    assert sample.target == "3"
+    assert sample.to_dict()["question_type"] == "score"
+
+    # 段階数不足 (< 2)
+    with pytest.raises(ValueError, match="2 段階以上 10 段階以下"):
+        UnifiedSample(
+            dataset_name="test_score",
+            sample_id="score_invalid_len",
+            question_type=QuestionType.SCORE,
+            state="テキスト。",
+            instructions="評価せよ。",
+            criteria={"0": "単一レベル"},
+            target="0",
+        )
+
+    # 段階数超過 (> 10)
+    with pytest.raises(ValueError, match="2 段階以上 10 段階以下"):
+        UnifiedSample(
+            dataset_name="test_score",
+            sample_id="score_invalid_len2",
+            question_type=QuestionType.SCORE,
+            state="テキスト。",
+            instructions="評価せよ。",
+            criteria={str(i): f"レベル{i}" for i in range(11)},
+            target="0",
+        )
+
+    # キーが 0 オリジン連番でない (1〜5 の場合)
+    with pytest.raises(ValueError, match="0 から始まる昇順連番"):
+        UnifiedSample(
+            dataset_name="test_score",
+            sample_id="score_invalid_keys",
+            question_type=QuestionType.SCORE,
+            state="テキスト。",
+            instructions="評価せよ。",
+            criteria={str(i): f"レベル{i}" for i in range(1, 6)},
+            target="3",
+        )
+
+    # target が criteria に含まれない
+    with pytest.raises(ValueError, match="target '9' が criteria"):
+        UnifiedSample(
+            dataset_name="test_score",
+            sample_id="score_invalid_target",
+            question_type=QuestionType.SCORE,
+            state="テキスト。",
+            instructions="評価せよ。",
+            criteria=criteria_5,
+            target="9",
+        )
+
+
+def test_sst5_converter_mock() -> None:
+    """SST-5 コンバータのモック Dataset を用いた変換テスト。"""
+    mock_data = {
+        "text": [
+            "Terrible and utterly boring.",
+            "Not good, had many flaws.",
+            "Average movie, neither good nor bad.",
+            "Pretty enjoyable and well acted.",
+            "Masterpiece of modern cinema!",
+        ],
+        "label": [0, 1, 2, 3, 4],
+        "label_text": [
+            "very negative",
+            "negative",
+            "neutral",
+            "positive",
+            "very positive",
+        ],
+    }
+    ds = Dataset.from_dict(mock_data)
+
+    converter = SST5Converter(seed=42)
+    samples = list(converter.convert_dataset(ds, split="test"))
+
+    assert len(samples) == 5
+    for idx, s in enumerate(samples):
+        assert s.question_type == QuestionType.SCORE
+        assert s.target == str(idx)
+        assert len(s.criteria) == 5
+        # criteria のキーが '0' 〜 '4' の昇順であること
+        assert list(s.criteria.keys()) == ["0", "1", "2", "3", "4"]
+        assert s.metadata["original_score"] == idx
+        assert s.metadata["scale_min"] == 0
+        assert s.metadata["scale_max"] == 4
+        assert s.metadata["scale_levels"] == 5
+        assert s.metadata["original_label_text"] == mock_data["label_text"][idx]
+
+    # クラス平準化 (max_samples_per_class) の検証
+    mock_imbalanced = {
+        "text": [
+            "Bad 1",
+            "Bad 2",
+            "Bad 3",
+            "Good 1",
+            "Good 2",
+        ],
+        "label": [0, 0, 0, 4, 4],
+    }
+    ds_imbalanced = Dataset.from_dict(mock_imbalanced)
+    converter_balanced = SST5Converter(max_samples_per_class=1, seed=42)
+    balanced_samples = list(
+        converter_balanced.convert_dataset(ds_imbalanced, split="train")
+    )
+    # クラス0から1件、クラス4から1件の計2件のみ抽出されること
+    assert len(balanced_samples) == 2
+    assert [s.target for s in balanced_samples] == ["0", "4"]

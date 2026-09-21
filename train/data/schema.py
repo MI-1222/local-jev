@@ -51,7 +51,9 @@ class UnifiedSample:
 
         Raises:
             ValueError: Choice 型で target が criteria のキーに含まれない場合、
-                または Noul 型で target が 'true' / 'false' 以外の場合。
+                Noul 型で target が 'true' / 'false' 以外の場合、
+                または Score 型で段階数が 2〜10 外、キーが昇順連番でない、
+                もしくは target が criteria に含まれない場合。
         """
         if self.question_type == QuestionType.CHOICE:
             if self.criteria and self.target not in self.criteria:
@@ -63,6 +65,22 @@ class UnifiedSample:
             if self.target.lower() not in valid_targets:
                 raise ValueError(
                     f"Noul 型の target は 'true' または 'false' である必要があります: '{self.target}'。"
+                )
+        elif self.question_type == QuestionType.SCORE:
+            num_levels = len(self.criteria)
+            if not (2 <= num_levels <= 10):
+                raise ValueError(
+                    f"Score 型の段階数は 2 段階以上 10 段階以下である必要があります: {num_levels}段階。"
+                )
+            expected_keys = [str(i) for i in range(num_levels)]
+            actual_keys = list(self.criteria.keys())
+            if actual_keys != expected_keys:
+                raise ValueError(
+                    f"Score 型の criteria キーは 0 から始まる昇順連番である必要があります: 期待={expected_keys}, 実際={actual_keys}。"
+                )
+            if self.target not in self.criteria:
+                raise ValueError(
+                    f"Score 型の target '{self.target}' が criteria のキーに含まれていません: {actual_keys}。"
                 )
 
     def to_dict(self) -> dict[str, Any]:
