@@ -3,5 +3,29 @@
 version = 4
 
 [[package]]
-name = "local-jev"
+name = "local-jev-cli"
 version = "0.1.0"
+dependencies = [
+ "local-jev-core",
+ "local-jev-runtime",
+ "local-jev-server",
+]
+
+[[package]]
+name = "local-jev-core"
+version = "0.1.0"
+
+[[package]]
+name = "local-jev-runtime"
+version = "0.1.0"
+dependencies = [
+ "local-jev-core",
+]
+
+[[package]]
+name = "local-jev-server"
+version = "0.1.0"
+dependencies = [
+ "local-jev-core",
+ "local-jev-runtime",
+]

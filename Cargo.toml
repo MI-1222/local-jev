@@ -1,6 +1,18 @@
-[package]
-name = "local-jev"
+[workspace]
+resolver = "2"
+members = [
+    "crates/local-jev-core",
+    "crates/local-jev-runtime",
+    "crates/local-jev-server",
+    "crates/local-jev-cli",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[workspace.dependencies]
+local-jev-core = { path = "crates/local-jev-core" }
+local-jev-runtime = { path = "crates/local-jev-runtime" }
+local-jev-server = { path = "crates/local-jev-server" }
+local-jev-cli = { path = "crates/local-jev-cli" }

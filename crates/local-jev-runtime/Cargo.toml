@@ -1,0 +1,7 @@
+[package]
+name = "local-jev-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+local-jev-core = { workspace = true }
