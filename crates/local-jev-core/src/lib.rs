@@ -6,12 +6,14 @@
 //! - Jev 互換の API スキーマ(`SystemOneRequest`, `SystemOneResponse`)の定義。
 //! - 決定プリミティブ(`Choice`, `Score`, `Noul`)の基本型定義とバリデーション。
 //! - 柔軟な `Criteria` 型(Map, List, None)のサポート。
-//! - 確率較正・エントロピー確信度等の数理計算ユーティリティ。
+//! - 成果物引き渡し契約(`calibration.json` スキーマ、ONNX テンソル仕様)の定義。
 
+pub mod contract;
 pub mod error;
 pub mod math;
 pub mod schema;
 
+pub use contract::*;
 pub use error::{CoreError, Result};
 pub use math::*;
 pub use schema::*;
