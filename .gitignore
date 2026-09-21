@@ -1,0 +1,9 @@
+# rust
+/target
+
+# python
+.venv
+*.pyc
+
+# mac
+.DS_Store
