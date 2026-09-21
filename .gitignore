@@ -8,3 +8,7 @@ __marimo__/
 
 # mac
 .DS_Store
+
+# models (ONNX および配布バンドル)
+models/*
+!/models/.gitkeep
