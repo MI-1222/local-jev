@@ -88,10 +88,11 @@ pub fn run_healthcheck(args: HealthcheckArgs) -> Result<(), Box<dyn std::error::
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
 
+    let user_agent = concat!("local-jev-healthcheck/", env!("CARGO_PKG_VERSION"));
     let request = format!(
         "GET {path} HTTP/1.1\r\n\
          Host: {host}:{port}\r\n\
-         User-Agent: local-jev-healthcheck/0.1.0\r\n\
+         User-Agent: {user_agent}\r\n\
          Connection: close\r\n\
          \r\n"
     );

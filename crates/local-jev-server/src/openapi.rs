@@ -52,7 +52,7 @@ use crate::handlers::ops::HealthStatusResponse;
     ),
     info(
         title = "Local-Jev HTTP API",
-        version = "0.1.0",
+        version = "0.0.0",
         description = "TypeSafe AI Jev 互換の非自己回帰型判断特化モデル向け超低遅延 REST API 仕様書。"
     )
 )]
@@ -60,7 +60,9 @@ pub struct ApiDoc;
 
 /// OpenAPI 3.1 仕様ドキュメント構造体を生成する。
 pub fn generate_openapi_spec() -> utoipa::openapi::OpenApi {
-    ApiDoc::openapi()
+    let mut spec = ApiDoc::openapi();
+    spec.info.version = env!("CARGO_PKG_VERSION").to_string();
+    spec
 }
 
 /// 整形済み OpenAPI 3.1 JSON 文字列をエクスポートする。

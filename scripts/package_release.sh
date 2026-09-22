@@ -11,7 +11,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-VERSION="${1:-v0.1.0}"
+DEFAULT_VERSION="v$(sed -n 's/^version = "\(.*\)"/\1/p' "${ROOT_DIR}/Cargo.toml" | head -n 1)"
+VERSION="${1:-${DEFAULT_VERSION}}"
 FLAVOR="${2:-cpu}"
 OUTPUT_BASE_DIR="${3:-${ROOT_DIR}/dist}"
 

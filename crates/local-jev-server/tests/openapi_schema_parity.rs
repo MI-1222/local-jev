@@ -15,7 +15,7 @@ fn test_openapi_spec_generation_and_components() {
 
     // 仕様書の基本メタデータ検証
     assert_eq!(spec.info.title, "Local-Jev HTTP API");
-    assert_eq!(spec.info.version, "0.1.0");
+    assert_eq!(spec.info.version, env!("CARGO_PKG_VERSION"));
 
     // コンポーネントスキーマの登録確認
     let components = spec.components.expect("components が定義されていること。");
