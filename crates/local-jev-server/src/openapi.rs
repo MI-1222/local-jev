@@ -5,6 +5,10 @@
 
 use axum::Router;
 use axum::response::IntoResponse;
+use local_jev_core::gating::{
+    CandidateProbability, DecisionRoute, EscalationContext, GatingConfig, GatingMetadata,
+    SystemRoutingSummary,
+};
 use local_jev_core::schema::{
     Answer, Criteria, Question, QuestionType, SystemOneRequest, SystemOneResponse, Usage,
 };
@@ -31,6 +35,12 @@ use crate::handlers::ops::HealthStatusResponse;
             Criteria,
             Answer,
             Usage,
+            DecisionRoute,
+            GatingConfig,
+            GatingMetadata,
+            CandidateProbability,
+            EscalationContext,
+            SystemRoutingSummary,
             ErrorResponse,
             ErrorDetail,
             HealthStatusResponse,

@@ -523,6 +523,7 @@ impl InferenceEngine {
             probabilities: full_probabilities,
             score: None,
             noul: None,
+            gating: None,
         })
     }
 

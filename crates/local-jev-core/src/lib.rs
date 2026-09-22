@@ -13,12 +13,14 @@
 pub mod contract;
 pub mod decision;
 pub mod error;
+pub mod gating;
 pub mod math;
 pub mod schema;
 
 pub use contract::*;
 pub use decision::*;
 pub use error::{CoreError, Result};
+pub use gating::*;
 pub use math::*;
 pub use schema::*;
 

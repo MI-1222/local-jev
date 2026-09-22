@@ -24,6 +24,9 @@ pub const METRIC_QUESTION_TYPE_TOTAL: &str = "local_jev_question_type_total";
 /// 判定確信度スコア分布メトリクス名。
 pub const METRIC_CONFIDENCE_SCORE: &str = "local_jev_confidence_score";
 
+/// 確信度ゲーティングルーティング数メトリクス名。
+pub const METRIC_GATING_ROUTES_TOTAL: &str = "local_jev_gating_routes_total";
+
 /// Prometheus メトリクスレコーダーを初期化し、テキストレンダリング用ハンドルを取得する。
 pub fn setup_metrics_recorder() -> Result<PrometheusHandle, Box<dyn std::error::Error + Send + Sync>>
 {
@@ -68,4 +71,14 @@ pub fn record_question_type(question_type: &'static str) {
 /// 判定確信度スコアを記録する。
 pub fn record_confidence(confidence: f64) {
     histogram!(METRIC_CONFIDENCE_SCORE).record(confidence);
+}
+
+/// 確信度ゲーティングのルーティング結果数を記録する。
+pub fn record_gating_route(route: &str, question_type: &str) {
+    counter!(
+        METRIC_GATING_ROUTES_TOTAL,
+        "route" => route.to_string(),
+        "type" => question_type.to_string(),
+    )
+    .increment(1);
 }

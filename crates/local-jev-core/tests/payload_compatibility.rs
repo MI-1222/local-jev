@@ -220,3 +220,58 @@ fn test_validation_score_invalid_count() {
         CoreError::InvalidScoreLevelCount { count: 11 }
     );
 }
+
+/// バリデーション異常系: ゲーティング閾値が逆転している場合 (low_threshold > high_threshold)。
+#[test]
+fn test_validation_gating_config_reversed_thresholds() {
+    let payload = json!({
+        "state": "テキスト",
+        "questions": {
+            "is_flagged": {
+                "type": "noul",
+                "instructions": "フラグ対象か判定せよ。"
+            }
+        },
+        "gating": {
+            "enabled": true,
+            "high_threshold": 0.4,
+            "low_threshold": 0.8
+        }
+    });
+
+    let request: SystemOneRequest = serde_json::from_value(payload).unwrap();
+    let err = request.validate().unwrap_err();
+    assert_eq!(
+        err,
+        CoreError::InvalidGatingConfig {
+            message: "low_threshold (0.8) は high_threshold (0.4) 以下である必要があります。"
+                .to_string()
+        }
+    );
+}
+
+/// 正常系: 妥当なゲーティング設定を含むリクエストの検証。
+#[test]
+fn test_validation_gating_config_valid() {
+    let payload = json!({
+        "state": "テキスト",
+        "questions": {
+            "is_flagged": {
+                "type": "noul",
+                "instructions": "フラグ対象か判定せよ。"
+            }
+        },
+        "gating": {
+            "enabled": true,
+            "high_threshold": 0.85,
+            "low_threshold": 0.45
+        }
+    });
+
+    let request: SystemOneRequest = serde_json::from_value(payload).unwrap();
+    assert!(request.validate().is_ok());
+    let gating = request.gating.unwrap();
+    assert!(gating.enabled);
+    assert_eq!(gating.high_threshold, 0.85);
+    assert_eq!(gating.low_threshold, 0.45);
+}

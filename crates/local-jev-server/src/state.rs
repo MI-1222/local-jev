@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use local_jev_core::contract::calibration::CalibrationConfig;
+use local_jev_core::gating::GatingConfig;
 use local_jev_runtime::engine::{CoarseToFineConfig, InferenceEngine};
 use local_jev_runtime::tokenizer::JevTokenizer;
 
@@ -33,6 +34,8 @@ pub struct AppState {
     pub chunk_size: usize,
     /// 前処理ガードレールパイプライン。
     pub guardrail_pipeline: GuardrailPipeline,
+    /// 確信度ゲーティング処理設定。
+    pub gating_config: GatingConfig,
 }
 
 impl AppState {
@@ -59,6 +62,10 @@ impl AppState {
             max_questions_per_request: DEFAULT_MAX_QUESTIONS_PER_REQUEST,
             chunk_size: DEFAULT_CHUNK_SIZE,
             guardrail_pipeline,
+            gating_config: GatingConfig {
+                enabled: false,
+                ..Default::default()
+            },
         }
     }
 
@@ -83,6 +90,10 @@ impl AppState {
             max_questions_per_request,
             chunk_size: chunk_size.max(1),
             guardrail_pipeline,
+            gating_config: GatingConfig {
+                enabled: false,
+                ..Default::default()
+            },
         }
     }
 
@@ -104,7 +115,17 @@ impl AppState {
             max_questions_per_request,
             chunk_size: chunk_size.max(1),
             guardrail_pipeline: GuardrailPipeline::new(guardrail_config),
+            gating_config: GatingConfig {
+                enabled: false,
+                ..Default::default()
+            },
         }
+    }
+
+    /// ゲーティング設定をカスタマイズして設定する。
+    pub fn with_gating_config(mut self, gating_config: GatingConfig) -> Self {
+        self.gating_config = gating_config;
+        self
     }
 
     /// サーバーがリクエストを安全に処理可能(Readiness)であるかを検査する。

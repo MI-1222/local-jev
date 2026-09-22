@@ -8,13 +8,14 @@ use std::time::Instant;
 
 use axum::extract::State;
 use axum::response::IntoResponse;
+use local_jev_core::gating::{evaluate_answer_gating, evaluate_response_routing};
 use local_jev_core::schema::{QuestionType, SystemOneRequest, SystemOneResponse, Usage};
 use serde_json::Value;
 
 use crate::error::{ErrorResponse, ServerError};
 use crate::metrics::{
-    record_confidence, record_http_duration, record_http_request, record_inference_metrics,
-    record_question_type,
+    record_confidence, record_gating_route, record_http_duration, record_http_request,
+    record_inference_metrics, record_question_type,
 };
 use crate::state::AppState;
 
@@ -63,59 +64,91 @@ pub async fn system_one_handler(
         other => other.to_string(),
     };
 
-    // 4. CPU/GPU バウンドな推論処理をブロッキングプールへオフロード
+    // 4. CPU/GPU バウンドな推論処理およびゲーティング判定をブロッキングプールへオフロード
     let engine = Arc::clone(&state.engine);
     let tokenizer = Arc::clone(&state.tokenizer);
     let calib_config = Arc::clone(&state.calib_config);
     let coarse_config = state.coarse_config.clone();
     let chunk_size = state.chunk_size;
     let questions = req.questions;
+    let gating_config = req.gating.unwrap_or_else(|| state.gating_config.clone());
 
     let inference_start = Instant::now();
-    let (answers, prompt_tokens) = tokio::task::spawn_blocking(move || {
-        // 正規化後ペイロードの正味トークン数を正確に算出
-        let state_tokens = tokenizer
-            .encode_state(&state_text)
-            .map(|toks| toks.len())
-            .unwrap_or(0);
-        let questions_tokens: usize = questions
-            .values()
-            .map(|q| {
-                local_jev_runtime::tokenizer::prompt::format_prompt(q)
-                    .and_then(|f| {
-                        tokenizer
-                            .inner()
-                            .encode(f.suffix.as_str(), false)
-                            .map_err(|e| {
-                                local_jev_runtime::error::RuntimeError::TokenizerEncodeError(
-                                    e.to_string(),
-                                )
-                            })
-                    })
-                    .map(|toks| toks.len())
-                    .unwrap_or(0)
-            })
-            .sum();
-        let total_prompt_tokens = state_tokens + questions_tokens;
+    let (answers, prompt_tokens, routing_summary, route_records) =
+        tokio::task::spawn_blocking(move || {
+            // 正規化後ペイロードの正味トークン数を正確に算出
+            let state_tokens = tokenizer
+                .encode_state(&state_text)
+                .map(|toks| toks.len())
+                .unwrap_or(0);
+            let questions_tokens: usize = questions
+                .values()
+                .map(|q| {
+                    local_jev_runtime::tokenizer::prompt::format_prompt(q)
+                        .and_then(|f| {
+                            tokenizer
+                                .inner()
+                                .encode(f.suffix.as_str(), false)
+                                .map_err(|e| {
+                                    local_jev_runtime::error::RuntimeError::TokenizerEncodeError(
+                                        e.to_string(),
+                                    )
+                                })
+                        })
+                        .map(|toks| toks.len())
+                        .unwrap_or(0)
+                })
+                .sum();
+            let total_prompt_tokens = state_tokens + questions_tokens;
 
-        // 粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行
-        let answers = engine.evaluate_batch_questions_coarse_to_fine_chunked(
-            &tokenizer,
-            &state_text,
-            &questions,
-            &calib_config,
-            &coarse_config,
-            chunk_size,
-        )?;
+            // 粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行
+            let mut answers = engine.evaluate_batch_questions_coarse_to_fine_chunked(
+                &tokenizer,
+                &state_text,
+                &questions,
+                &calib_config,
+                &coarse_config,
+                chunk_size,
+            )?;
 
-        Ok::<_, ServerError>((answers, total_prompt_tokens))
-    })
-    .await
-    .map_err(|join_err| {
-        ServerError::Internal(format!(
-            "ブロッキング推論タスクが異常終了しました: {join_err}"
-        ))
-    })??;
+            // 確信度ゲーティング(3系統ルーティング)処理を推論直後に一貫実行(questions をゼロコピーで参照)
+            let (routing_summary, route_records) = if gating_config.enabled {
+                let mut records = Vec::with_capacity(answers.len());
+                for (qid, answer) in answers.iter_mut() {
+                    let q_def = questions.get(qid);
+                    let q_type_str = q_def
+                        .map(|q| match q.question_type {
+                            QuestionType::Choice => "choice",
+                            QuestionType::Score => "score",
+                            QuestionType::Noul => "noul",
+                        })
+                        .unwrap_or("unknown");
+
+                    let meta = evaluate_answer_gating(answer, Some(qid), q_def, &gating_config);
+                    records.push((
+                        meta.route.as_str(),
+                        q_type_str,
+                        qid.clone(),
+                        meta.route,
+                        meta.confidence,
+                        meta.reason.clone(),
+                    ));
+                    answer.gating = Some(meta);
+                }
+                let summary = evaluate_response_routing(&answers);
+                (Some(summary), records)
+            } else {
+                (None, Vec::new())
+            };
+
+            Ok::<_, ServerError>((answers, total_prompt_tokens, routing_summary, route_records))
+        })
+        .await
+        .map_err(|join_err| {
+            ServerError::Internal(format!(
+                "ブロッキング推論タスクが異常終了しました: {join_err}。"
+            ))
+        })??;
 
     let inference_duration = inference_start.elapsed().as_secs_f64();
     record_inference_metrics(inference_duration, question_count);
@@ -127,10 +160,25 @@ pub async fn system_one_handler(
         }
     }
 
-    // 4. トークン消費量のメタデータ付与
+    // 5. ゲーティング判定ログおよびメトリクスの記録
+    for (route_str, q_type_str, qid, route, confidence, reason) in route_records {
+        record_gating_route(route_str, q_type_str);
+        tracing::info!(
+            question_id = %qid,
+            route = %route,
+            confidence = confidence,
+            reason = %reason,
+            "確信度ゲーティング判定を適用しました。"
+        );
+    }
+
+    // 6. トークン消費量のメタデータ付与
     let usage = Usage::new(prompt_tokens);
 
-    let response = SystemOneResponse::new(answers, usage);
+    let mut response = SystemOneResponse::new(answers, usage);
+    if let Some(summary) = routing_summary {
+        response = response.with_routing(summary);
+    }
 
     let total_duration = start_time.elapsed().as_secs_f64();
     record_http_duration("/v1/systemone", total_duration);

@@ -174,10 +174,10 @@ fn test_end_to_end_question_inference_and_decision() {
     let mut answers = IndexMap::new();
     answers.insert("q_choice_01".to_string(), answer);
 
-    let response = SystemOneResponse {
+    let response = SystemOneResponse::new(
         answers,
-        usage: local_jev_core::schema::Usage::new(tokenized.input_ids.len()),
-    };
+        local_jev_core::schema::Usage::new(tokenized.input_ids.len()),
+    );
     let json = serde_json::to_string(&response).expect("シリアライズ失敗。");
     assert!(json.contains("q_choice_01"));
     assert!(json.contains("probabilities"));

@@ -29,6 +29,12 @@ fn test_openapi_spec_generation_and_components() {
         "Criteria",
         "Answer",
         "Usage",
+        "DecisionRoute",
+        "GatingConfig",
+        "GatingMetadata",
+        "CandidateProbability",
+        "EscalationContext",
+        "SystemRoutingSummary",
         "ErrorResponse",
         "ErrorDetail",
         "HealthStatusResponse",
@@ -40,6 +46,39 @@ fn test_openapi_spec_generation_and_components() {
             "スキーマ '{schema_name}' が OpenAPI 仕様書に含まれていません。"
         );
     }
+}
+
+#[test]
+fn test_decision_route_enum_casing_parity() {
+    let spec = generate_openapi_spec();
+    let spec_json = serde_json::to_value(&spec).expect("JSON シリアライズに成功すること。");
+
+    let route_schema = &spec_json["components"]["schemas"]["DecisionRoute"];
+    let enum_values = route_schema["enum"]
+        .as_array()
+        .expect("enum 定義が存在すること。");
+
+    let string_values: Vec<&str> = enum_values.iter().filter_map(|v| v.as_str()).collect();
+
+    // serde(rename_all = "snake_case") と完全一致すること
+    assert_eq!(
+        string_values,
+        vec!["auto_execute", "confirm_or_escalate", "fallback"]
+    );
+
+    use local_jev_core::gating::DecisionRoute;
+    assert_eq!(
+        serde_json::to_string(&DecisionRoute::AutoExecute).unwrap(),
+        "\"auto_execute\""
+    );
+    assert_eq!(
+        serde_json::to_string(&DecisionRoute::ConfirmOrEscalate).unwrap(),
+        "\"confirm_or_escalate\""
+    );
+    assert_eq!(
+        serde_json::to_string(&DecisionRoute::Fallback).unwrap(),
+        "\"fallback\""
+    );
 }
 
 #[test]

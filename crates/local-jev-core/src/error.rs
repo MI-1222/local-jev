@@ -61,4 +61,11 @@ pub enum CoreError {
         /// エラー詳細メッセージ。
         message: String,
     },
+
+    /// 確信度ゲーティング設定のバリデーションエラー。
+    #[error("ゲーティング設定が不正です: {message}。")]
+    InvalidGatingConfig {
+        /// エラー詳細メッセージ。
+        message: String,
+    },
 }

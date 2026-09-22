@@ -9,6 +9,7 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
+use crate::gating::{DecisionRoute, GatingConfig, GatingMetadata, SystemRoutingSummary};
 
 /// 質問の決定プリミティブ種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -216,6 +217,10 @@ pub struct SystemOneRequest {
 
     /// 評価対象となる質問群のマップ(キーは質問識別子)。
     pub questions: IndexMap<String, Question>,
+
+    /// 確信度ゲーティング処理の設定パラメータ(任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gating: Option<GatingConfig>,
 }
 
 impl SystemOneRequest {
@@ -225,6 +230,7 @@ impl SystemOneRequest {
             model: None,
             state: state.into(),
             questions,
+            gating: None,
         }
     }
 
@@ -238,7 +244,14 @@ impl SystemOneRequest {
             model: Some(model.into()),
             state: state.into(),
             questions,
+            gating: None,
         }
+    }
+
+    /// ゲーティング設定を指定してリクエストを作成する。
+    pub fn with_gating(mut self, gating: GatingConfig) -> Self {
+        self.gating = Some(gating);
+        self
     }
 
     /// リクエスト全体の整合性を検証する。
@@ -248,6 +261,9 @@ impl SystemOneRequest {
         }
         for (question_id, question) in &self.questions {
             question.validate(question_id)?;
+        }
+        if let Some(ref gating) = self.gating {
+            gating.validate()?;
         }
         Ok(())
     }
@@ -276,6 +292,10 @@ pub struct Answer {
     /// 分布の尖り度に基づく正規化確信度(0.0 <= C <= 1.0)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f64>,
+
+    /// 確信度ゲーティングによるルーティングおよび監査メタデータ(任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gating: Option<GatingMetadata>,
 }
 
 impl Answer {
@@ -291,6 +311,7 @@ impl Answer {
             noul: None,
             probabilities: Some(probabilities),
             confidence: Some(confidence),
+            gating: None,
         }
     }
 
@@ -302,6 +323,7 @@ impl Answer {
             noul: None,
             probabilities: Some(probabilities),
             confidence: Some(confidence),
+            gating: None,
         }
     }
 
@@ -313,7 +335,19 @@ impl Answer {
             noul: Some(probability),
             probabilities: None,
             confidence: None,
+            gating: None,
         }
+    }
+
+    /// ゲーティングメタデータを付与して自身を返却する。
+    pub fn with_gating(mut self, gating: GatingMetadata) -> Self {
+        self.gating = Some(gating);
+        self
+    }
+
+    /// 割り当てられたルーティング種別を取得する。
+    pub fn route(&self) -> Option<DecisionRoute> {
+        self.gating.as_ref().map(|g| g.route)
     }
 
     /// ゲーティング処理等に向けた実効確信度(Effective Confidence)を取得する。
@@ -372,11 +406,25 @@ pub struct SystemOneResponse {
 
     /// トークン使用統計情報。
     pub usage: Usage,
+
+    /// リクエスト全体の集約ルーティングサマリー(任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<SystemRoutingSummary>,
 }
 
 impl SystemOneResponse {
     /// 新規レスポンスを生成する。
     pub fn new(answers: IndexMap<String, Answer>, usage: Usage) -> Self {
-        Self { answers, usage }
+        Self {
+            answers,
+            usage,
+            routing: None,
+        }
+    }
+
+    /// 集約ルーティングサマリーを付与して新規レスポンスを生成する。
+    pub fn with_routing(mut self, routing: SystemRoutingSummary) -> Self {
+        self.routing = Some(routing);
+        self
     }
 }
