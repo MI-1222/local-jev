@@ -6,8 +6,12 @@
 use indexmap::IndexMap;
 use local_jev_core::contract::CalibrationConfig;
 use local_jev_core::decision::evaluate_question_with_buf;
-use local_jev_core::schema::{Answer, Question};
+use local_jev_core::schema::{Answer, Question, QuestionType};
 
+use crate::engine::coarse::{
+    CoarseScorer, CoarseToFineConfig, LexicalCoarseScorer, filter_top_candidates,
+    reconstruct_probabilities,
+};
 use crate::engine::session::InferenceEngine;
 use crate::error::Result;
 use crate::tokenizer::{BatchTokenizedQuestions, JevTokenizer};
@@ -334,5 +338,113 @@ impl InferenceEngine {
         }
 
         Ok(answers)
+    }
+
+    /// 任意の類似度スコアラーを指定して、粗密 2 段階探索を適用した複数質問一括バッチ推論を実行する。
+    ///
+    /// # 処理フロー
+    /// 1. 各質問を走査し、`Choice` かつ候補数 $K > \text{threshold}$ の質問を個別に Top-M 候補にスクリーニング。
+    /// 2. 縮小質問群(および閾値以下の元質問群)をプレフィックス共有バッチ化。
+    /// 3. バッチ全体の最大候補数 $K_{\max}$ が圧縮された状態で単一フォワードパスを実行。
+    /// 4. 各質問の決定プリミティブを解決し、スクリーニングされた質問については除外候補を確率 0.0 として全候補確率マップを再構成。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問マップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `scorer`: 類似度スコアラー実装。
+    pub fn evaluate_batch_questions_coarse_to_fine_with_scorer<S: CoarseScorer>(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        scorer: &S,
+    ) -> Result<IndexMap<String, Answer>> {
+        coarse_config.validate()?;
+
+        if questions.is_empty() {
+            return self.evaluate_batch_questions(tokenizer, state, questions, calib_config);
+        }
+
+        // 各質問の前処理と縮小
+        let mut processed_questions = IndexMap::with_capacity(questions.len());
+        let mut original_keys_map: IndexMap<String, Vec<String>> = IndexMap::new();
+
+        for (q_key, question) in questions {
+            let should_trigger = question.question_type == QuestionType::Choice
+                && question
+                    .criteria
+                    .as_ref()
+                    .and_then(|c| c.as_map())
+                    .map(|map| coarse_config.should_trigger(map.len()))
+                    .unwrap_or(false);
+
+            if should_trigger {
+                let map = question
+                    .criteria
+                    .as_ref()
+                    .and_then(|c| c.as_map())
+                    .expect("should_trigger により Map が保証されている。");
+
+                let original_keys: Vec<String> = map.keys().cloned().collect();
+                let query = format!("State: {}\nInstructions: {}", state, question.instructions);
+
+                let filtered = filter_top_candidates(&query, map, coarse_config, scorer)?;
+                let sub_question =
+                    Question::new_choice(question.instructions.clone(), filtered.selected);
+
+                processed_questions.insert(q_key.clone(), sub_question);
+                original_keys_map.insert(q_key.clone(), original_keys);
+            } else {
+                processed_questions.insert(q_key.clone(), question.clone());
+            }
+        }
+
+        // バッチ推論を実行 (最大候補数 K_max が縮小された状態で単一フォワードパス)
+        let mut answers =
+            self.evaluate_batch_questions(tokenizer, state, &processed_questions, calib_config)?;
+
+        // スクリーニングされた質問の確率マップを全候補空間に復元
+        for (q_key, original_keys) in &original_keys_map {
+            if let Some(answer) = answers.get_mut(q_key)
+                && let Some(ref sub_probs) = answer.probabilities
+            {
+                let full_probs = reconstruct_probabilities(original_keys, sub_probs);
+                answer.probabilities = Some(full_probs);
+            }
+        }
+
+        Ok(answers)
+    }
+
+    /// 既定の語彙スコアラー (`LexicalCoarseScorer`) を用いて、粗密 2 段階探索を適用した複数質問一括バッチ推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問マップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    pub fn evaluate_batch_questions_coarse_to_fine(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+    ) -> Result<IndexMap<String, Answer>> {
+        let scorer = LexicalCoarseScorer::new(tokenizer);
+        self.evaluate_batch_questions_coarse_to_fine_with_scorer(
+            tokenizer,
+            state,
+            questions,
+            calib_config,
+            coarse_config,
+            &scorer,
+        )
     }
 }

@@ -7,16 +7,24 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use local_jev_core::contract::calibration::CalibrationConfig;
 use local_jev_core::contract::model_spec::{
     ModelInputDimensions, TENSOR_ATTENTION_MASK, TENSOR_INPUT_IDS, TENSOR_LOGITS, TENSOR_OP_INDICES,
 };
+use local_jev_core::decision::evaluate_question;
+use local_jev_core::schema::{Answer, Question, QuestionType};
+
 use ort::session::Session;
 use ort::value::TensorRef;
 
+use crate::engine::coarse::{
+    CoarseScorer, CoarseToFineConfig, LexicalCoarseScorer, filter_top_candidates,
+    reconstruct_probabilities,
+};
 use crate::engine::config::{ExecutionProvider, SessionConfig};
 use crate::engine::provider::register_execution_providers;
 use crate::error::{Result, RuntimeError};
-use crate::tokenizer::TokenizedQuestion;
+use crate::tokenizer::{JevTokenizer, TokenizedQuestion};
 
 /// スレッドセーフな ONNX Runtime 推論エンジン。
 ///
@@ -431,5 +439,117 @@ impl InferenceEngine {
             .into_iter()
             .next()
             .ok_or_else(|| RuntimeError::InvalidTensorData("推論出力が空です。".to_string()))
+    }
+
+    /// 任意の類似度スコアラーを指定して、粗密 2 段階探索 (Coarse-to-Fine) で単一質問を評価する。
+    ///
+    /// # 処理フロー
+    /// 1. `question.question_type == QuestionType::Choice` かつ `criteria.len() > coarse_config.threshold` の場合にのみ 2 段階探索を発動。
+    /// 2. ネガティブ候補保護 (Pinning) およびスコアラーによる Top-M スクリーニングを実施。
+    /// 3. 絞り込み後の候補マップを用いて部分質問 `sub_question` を構築。
+    /// 4. `tokenizer.encode_question` および `self.forward_question` を実行。
+    /// 5. 較正設定 `calib_config` (Fine 候補数 $M$ に対応するバケット) を適用して `sub_answer` を導出。
+    /// 6. `reconstruct_probabilities` により除外候補を確率 0.0 として全候補確率マップを再構成して返却。
+    ///
+    /// 発動条件を満たさない質問 (候補数 $K \le \text{threshold}$、または Score/Noul 型) は、
+    /// 直接通常推論 (`encode_question` -> `forward_question` -> `evaluate_question`) へバイパスする。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `question`: 質問定義。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `scorer`: 類似度スコアラー実装。
+    pub fn evaluate_question_coarse_to_fine_with_scorer<S: CoarseScorer>(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        question: &Question,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        scorer: &S,
+    ) -> Result<Answer> {
+        coarse_config.validate()?;
+
+        // 発動条件の検査: Choice 型 かつ Criteria が Map 形式 かつ 候補数 > threshold
+        let should_trigger = question.question_type == QuestionType::Choice
+            && question
+                .criteria
+                .as_ref()
+                .and_then(|c| c.as_map())
+                .map(|map| coarse_config.should_trigger(map.len()))
+                .unwrap_or(false);
+
+        if !should_trigger {
+            // バイパス: 通常の単一推論を実行
+            let tokenized = tokenizer.encode_question(state, question)?;
+            let logits = self.forward_question(&tokenized)?;
+            return evaluate_question(question, &logits, calib_config).map_err(RuntimeError::Core);
+        }
+
+        let map = question
+            .criteria
+            .as_ref()
+            .and_then(|c| c.as_map())
+            .expect("should_trigger により Map の存在が保証されている。");
+
+        let original_keys: Vec<String> = map.keys().cloned().collect();
+        let query = format!("State: {}\nInstructions: {}", state, question.instructions);
+
+        // 1. Coarse 粗スクリーニング
+        let filtered = filter_top_candidates(&query, map, coarse_config, scorer)?;
+
+        // 2. 縮小質問の構築
+        let sub_question = Question::new_choice(question.instructions.clone(), filtered.selected);
+
+        // 3. Fine 精密推論
+        let sub_tokenized = tokenizer.encode_question(state, &sub_question)?;
+        let sub_logits = self.forward_question(&sub_tokenized)?;
+
+        // 4. 縮小候補空間での決定数理解決 (M 候補の温度バケットが適用される)
+        let sub_answer = evaluate_question(&sub_question, &sub_logits, calib_config)
+            .map_err(RuntimeError::Core)?;
+
+        // 5. 全候補空間に対する確率マップの再構成
+        let full_probabilities = sub_answer
+            .probabilities
+            .as_ref()
+            .map(|sub_probs| reconstruct_probabilities(&original_keys, sub_probs));
+
+        Ok(Answer {
+            choice: sub_answer.choice,
+            confidence: sub_answer.confidence,
+            probabilities: full_probabilities,
+            score: None,
+            noul: None,
+        })
+    }
+
+    /// 既定の語彙スコアラー (`LexicalCoarseScorer`) を用いて、粗密 2 段階探索で単一質問を評価する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `question`: 質問定義。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    pub fn evaluate_question_coarse_to_fine(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        question: &Question,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+    ) -> Result<Answer> {
+        let scorer = LexicalCoarseScorer::new(tokenizer);
+        self.evaluate_question_coarse_to_fine_with_scorer(
+            tokenizer,
+            state,
+            question,
+            calib_config,
+            coarse_config,
+            &scorer,
+        )
     }
 }
