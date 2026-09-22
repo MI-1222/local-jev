@@ -11,3 +11,12 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
+ort = { workspace = true }
+ndarray = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = []
+coreml = ["ort/coreml"]
+cuda = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]

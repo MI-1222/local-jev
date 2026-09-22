@@ -9,9 +9,11 @@
 
 pub use local_jev_core as core;
 
+pub mod engine;
 pub mod error;
 pub mod tokenizer;
 
+pub use engine::{ExecutionProvider, InferenceEngine, OptimizationLevel, SessionConfig};
 pub use error::{Result, RuntimeError};
 pub use tokenizer::{JevTokenizer, TokenizedQuestion};
 

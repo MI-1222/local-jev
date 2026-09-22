@@ -18,7 +18,7 @@ pub enum RuntimeError {
         token: &'static str,
     },
 
-    /// オプションマーカートークン [OP] が単一トークンとして分割されていない。
+    /// オプションマーカートークン \[OP\] が単一トークンとして分割されていない。
     #[error(
         "オプションマーカー [OP] の分割テストに失敗しました: 期待ID={expected}, 実際={actual:?}。"
     )]
@@ -44,7 +44,7 @@ pub enum RuntimeError {
         max_len: usize,
     },
 
-    /// 検出された [OP] マーカー数と質問候補数の不一致。
+    /// 検出された \[OP\] マーカー数と質問候補数の不一致。
     #[error("検出された [OP] マーカー数 ({detected}) が候補数 ({expected}) と一致しません。")]
     OptionMarkerCountMismatch {
         /// 検出されたマーカー数。
@@ -56,6 +56,26 @@ pub enum RuntimeError {
     /// 不正な質問スキーマまたは評価基準。
     #[error("質問仕様が不正です: {0}。")]
     InvalidQuestion(String),
+
+    /// ONNX Runtime 内部エラー。
+    #[error("ONNX Runtime 内部エラー: {0}。")]
+    Ort(#[from] ort::Error),
+
+    /// ONNX Runtime セッション構築設定エラー。
+    #[error("ONNX Runtime 設定エラー: {0}。")]
+    OrtConfig(String),
+
+    /// モデルの入出力契約違反(テンソル名や次元数の不整合)。
+    #[error("モデル入出力契約違反: {0}。")]
+    ModelContractViolation(String),
+
+    /// テンソルデータが不正(系列長超過インデックスや NaN/Inf など)。
+    #[error("テンソルデータが不正です: {0}。")]
+    InvalidTensorData(String),
+
+    /// Execution Provider の初期化エラー。
+    #[error("Execution Provider の初期化に失敗しました: {0}。")]
+    ExecutionProviderError(String),
 
     /// コア数理・型スキーマクレート由来のエラー。
     #[error("コアエラー: {0}。")]

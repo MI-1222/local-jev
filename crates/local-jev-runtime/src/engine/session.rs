@@ -1,0 +1,435 @@
+//! # ONNX Runtime 推論セッション管理モジュール
+//!
+//! エクスポート済み ONNX モデルグラフのライフサイクル、入力テンソル整合性検証、
+//! ゼロコピーテンソルバインド、およびセッションプールによる高並列フォワードパスを提供する。
+
+use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use local_jev_core::contract::model_spec::{
+    ModelInputDimensions, TENSOR_ATTENTION_MASK, TENSOR_INPUT_IDS, TENSOR_LOGITS, TENSOR_OP_INDICES,
+};
+use ort::session::Session;
+use ort::value::TensorRef;
+
+use crate::engine::config::{ExecutionProvider, SessionConfig};
+use crate::engine::provider::register_execution_providers;
+use crate::error::{Result, RuntimeError};
+use crate::tokenizer::TokenizedQuestion;
+
+/// スレッドセーフな ONNX Runtime 推論エンジン。
+///
+/// 内部にセッションプールを保持し、複数スレッドからの並行推論要求に対して
+/// アロケーションフリーかつ競合を最小化したフォワードパスを実行する。
+/// `Arc<InferenceEngine>` として複数ワーカー間で安全に共有可能である。
+pub struct InferenceEngine {
+    /// セッションプール。並行度に応じた複数の ORT セッションを保持する。
+    sessions: Vec<Mutex<Session>>,
+    /// ラウンドロビン選択用インデックスカウンター。
+    next_session_idx: AtomicUsize,
+    /// 実際に有効化された Execution Provider。
+    active_provider: ExecutionProvider,
+    /// モデルが要求する入力テンソル名一覧。
+    input_names: Vec<String>,
+    /// モデルが出力するテンソル名一覧。
+    output_names: Vec<String>,
+}
+
+impl InferenceEngine {
+    /// ファイルパスからモデルを読み込み、推論エンジンを初期化する。
+    ///
+    /// # 引数
+    /// - `model_path`: ONNX モデルファイルのパス。
+    /// - `config`: セッション構築設定。
+    pub fn new(model_path: impl AsRef<Path>, config: SessionConfig) -> Result<Self> {
+        let model_path_ref = model_path.as_ref();
+        if !model_path_ref.exists() {
+            return Err(RuntimeError::ModelContractViolation(format!(
+                "モデルファイルが存在しません: {}。",
+                model_path_ref.display()
+            )));
+        }
+
+        let pool_size = config.pool_size.max(1);
+        let mut sessions = Vec::with_capacity(pool_size);
+        let mut active_provider = ExecutionProvider::CPU;
+
+        tracing::info!(
+            "推論セッションの初期化を開始します (パス: {}, プール数: {})...",
+            model_path_ref.display(),
+            pool_size
+        );
+
+        for i in 0..pool_size {
+            let mut builder = Session::builder().map_err(RuntimeError::Ort)?;
+            builder = builder
+                .with_optimization_level(config.optimization_level.to_ort_level())
+                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+            builder = builder
+                .with_memory_pattern(config.enable_mem_arena)
+                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+            if let Some(intra) = config.intra_threads {
+                builder = builder
+                    .with_intra_threads(intra)
+                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+            }
+            if let Some(inter) = config.inter_threads {
+                builder = builder
+                    .with_inter_threads(inter)
+                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+            }
+
+            let provider = register_execution_providers(
+                &mut builder,
+                &config.preferred_providers,
+                config.enable_mem_arena,
+            )?;
+            if i == 0 {
+                active_provider = provider;
+            }
+
+            let session = builder
+                .commit_from_file(model_path_ref)
+                .map_err(RuntimeError::Ort)?;
+            sessions.push(Mutex::new(session));
+        }
+
+        Self::init_with_sessions(sessions, active_provider)
+    }
+
+    /// メモリ上のバイト列からモデルを読み込み、推論エンジンを初期化する。
+    ///
+    /// # 引数
+    /// - `model_bytes`: ONNX モデルバイナリデータ。
+    /// - `config`: セッション構築設定。
+    pub fn from_bytes(model_bytes: &[u8], config: SessionConfig) -> Result<Self> {
+        let pool_size = config.pool_size.max(1);
+        let mut sessions = Vec::with_capacity(pool_size);
+        let mut active_provider = ExecutionProvider::CPU;
+
+        tracing::info!(
+            "バイト列からの推論セッション初期化を開始します (サイズ: {} bytes, プール数: {})...",
+            model_bytes.len(),
+            pool_size
+        );
+
+        for i in 0..pool_size {
+            let mut builder = Session::builder().map_err(RuntimeError::Ort)?;
+            builder = builder
+                .with_optimization_level(config.optimization_level.to_ort_level())
+                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+            builder = builder
+                .with_memory_pattern(config.enable_mem_arena)
+                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+            if let Some(intra) = config.intra_threads {
+                builder = builder
+                    .with_intra_threads(intra)
+                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+            }
+            if let Some(inter) = config.inter_threads {
+                builder = builder
+                    .with_inter_threads(inter)
+                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+            }
+
+            let provider = register_execution_providers(
+                &mut builder,
+                &config.preferred_providers,
+                config.enable_mem_arena,
+            )?;
+            if i == 0 {
+                active_provider = provider;
+            }
+
+            let session = builder
+                .commit_from_memory(model_bytes)
+                .map_err(RuntimeError::Ort)?;
+            sessions.push(Mutex::new(session));
+        }
+
+        Self::init_with_sessions(sessions, active_provider)
+    }
+
+    /// 構築済みセッション群から契約を検証し、エンジンインスタンスを完成させる。
+    fn init_with_sessions(
+        sessions: Vec<Mutex<Session>>,
+        active_provider: ExecutionProvider,
+    ) -> Result<Self> {
+        let first_session = sessions[0].lock().map_err(|e| {
+            RuntimeError::ModelContractViolation(format!("セッションロック獲得失敗: {e}。"))
+        })?;
+
+        let input_names: Vec<String> = first_session
+            .inputs()
+            .iter()
+            .map(|o| o.name().to_string())
+            .collect();
+        let output_names: Vec<String> = first_session
+            .outputs()
+            .iter()
+            .map(|o| o.name().to_string())
+            .collect();
+
+        // 必須入力テンソル契約の検証
+        if !input_names.iter().any(|name| name == TENSOR_INPUT_IDS) {
+            return Err(RuntimeError::ModelContractViolation(format!(
+                "モデルに必須入力テンソル '{TENSOR_INPUT_IDS}' が存在しません: 検出={input_names:?}。"
+            )));
+        }
+        if !input_names.iter().any(|name| name == TENSOR_ATTENTION_MASK) {
+            return Err(RuntimeError::ModelContractViolation(format!(
+                "モデルに必須入力テンソル '{TENSOR_ATTENTION_MASK}' が存在しません: 検出={input_names:?}。"
+            )));
+        }
+        if !input_names.iter().any(|name| name == TENSOR_OP_INDICES) {
+            return Err(RuntimeError::ModelContractViolation(format!(
+                "モデルに必須入力テンソル '{TENSOR_OP_INDICES}' が存在しません: 検出={input_names:?}。"
+            )));
+        }
+
+        // 必須出力テンソル契約の検証
+        if !output_names.iter().any(|name| name == TENSOR_LOGITS) {
+            return Err(RuntimeError::ModelContractViolation(format!(
+                "モデルに必須出力テンソル '{TENSOR_LOGITS}' が存在しません: 検出={output_names:?}。"
+            )));
+        }
+
+        drop(first_session);
+
+        tracing::info!(
+            "モデル契約検証が完了しました: 入力={input_names:?}, 出力={output_names:?}, アクティブEP={}",
+            active_provider.name()
+        );
+
+        Ok(Self {
+            sessions,
+            next_session_idx: AtomicUsize::new(0),
+            active_provider,
+            input_names,
+            output_names,
+        })
+    }
+
+    /// 有効化された Execution Provider を取得する。
+    pub fn active_provider(&self) -> ExecutionProvider {
+        self.active_provider
+    }
+
+    /// モデルの入力テンソル名一覧を取得する。
+    pub fn input_names(&self) -> &[String] {
+        &self.input_names
+    }
+
+    /// モデルの出力テンソル名一覧を取得する。
+    pub fn output_names(&self) -> &[String] {
+        &self.output_names
+    }
+
+    /// セッションプールサイズを取得する。
+    pub fn pool_size(&self) -> usize {
+        self.sessions.len()
+    }
+
+    /// 平坦化された生テンソルスライスを受け取り、推論を実行してロジットを返却する。
+    ///
+    /// # 引数
+    /// - `input_ids`: トークン ID 列 (`[batch_size * seq_len]`)。
+    /// - `attention_mask`: アテンションマスク列 (`[batch_size * seq_len]`)。
+    /// - `op_indices`: オプションマーカー位置インデックス (`[batch_size * num_options]`)。
+    /// - `dims`: 入力テンソルの次元情報 (`batch_size`, `sequence_length`, `num_options`)。
+    ///
+    /// # 戻り値
+    /// 各バッチサンプルのロジット配列 (`Vec<Vec<f64>>`)。
+    pub fn forward_raw(
+        &self,
+        input_ids: &[i64],
+        attention_mask: &[i64],
+        op_indices: &[i64],
+        dims: ModelInputDimensions,
+    ) -> Result<Vec<Vec<f64>>> {
+        let total_logits = dims.batch_size * dims.num_options;
+        let mut flat_logits = vec![0.0f64; total_logits];
+
+        self.forward_raw_into(
+            input_ids,
+            attention_mask,
+            op_indices,
+            dims,
+            &mut flat_logits,
+        )?;
+
+        let mut batched_logits = Vec::with_capacity(dims.batch_size);
+        for chunk in flat_logits.chunks_exact(dims.num_options) {
+            batched_logits.push(chunk.to_vec());
+        }
+
+        Ok(batched_logits)
+    }
+
+    /// 平坦化された生テンソルスライスを受け取り、推論結果を指定されたスライスに書き込む。
+    ///
+    /// 入力テンソルは借用ビュー (`TensorRef`) によりゼロコピーで ORT に渡され、
+    /// 出力も事前確保済みスライスに直接展開されるため、ヒープ確保が発生しない。
+    ///
+    /// # 引数
+    /// - `input_ids`: トークン ID 列 (`[batch_size * seq_len]`)。
+    /// - `attention_mask`: アテンションマスク列 (`[batch_size * seq_len]`)。
+    /// - `op_indices`: オプションマーカー位置インデックス (`[batch_size * num_options]`)。
+    /// - `dims`: 入力テンソルの次元情報 (`batch_size`, `sequence_length`, `num_options`)。
+    /// - `out_logits`: 結果ロジットの書き込み先バッファ (`[batch_size * num_options]`)。
+    pub fn forward_raw_into(
+        &self,
+        input_ids: &[i64],
+        attention_mask: &[i64],
+        op_indices: &[i64],
+        dims: ModelInputDimensions,
+        out_logits: &mut [f64],
+    ) -> Result<()> {
+        let batch_size = dims.batch_size;
+        let seq_len = dims.sequence_length;
+        let num_options = dims.num_options;
+
+        // 1. 次元整合性検証
+        if input_ids.len() != batch_size * seq_len {
+            return Err(RuntimeError::InvalidTensorData(format!(
+                "input_ids 長さ ({}) が期待値 ({} * {} = {}) と一致しません。",
+                input_ids.len(),
+                batch_size,
+                seq_len,
+                batch_size * seq_len
+            )));
+        }
+        if attention_mask.len() != batch_size * seq_len {
+            return Err(RuntimeError::InvalidTensorData(format!(
+                "attention_mask 長さ ({}) が期待値 ({} * {} = {}) と一致しません。",
+                attention_mask.len(),
+                batch_size,
+                seq_len,
+                batch_size * seq_len
+            )));
+        }
+        if op_indices.len() != batch_size * num_options {
+            return Err(RuntimeError::InvalidTensorData(format!(
+                "op_indices 長さ ({}) が期待値 ({} * {} = {}) と一致しません。",
+                op_indices.len(),
+                batch_size,
+                num_options,
+                batch_size * num_options
+            )));
+        }
+        if out_logits.len() != batch_size * num_options {
+            return Err(RuntimeError::InvalidTensorData(format!(
+                "出力バッファ長 ({}) が期待値 ({} * {} = {}) と一致しません。",
+                out_logits.len(),
+                batch_size,
+                num_options,
+                batch_size * num_options
+            )));
+        }
+
+        // 2. op_indices の範囲外インデックスチェック (Gather 層クラッシュ・セグフォ防止)
+        for (i, &idx) in op_indices.iter().enumerate() {
+            if idx < 0 || idx >= seq_len as i64 {
+                return Err(RuntimeError::InvalidTensorData(format!(
+                    "op_indices[{i}] = {idx} が系列長 (0..{seq_len}) の範囲外です。"
+                )));
+            }
+        }
+
+        // 3. 入力 ORT TensorRef をゼロコピー借用ビューで構築 (.to_vec() 排除)
+        let input_ids_tensor = TensorRef::from_array_view(([batch_size, seq_len], input_ids))
+            .map_err(RuntimeError::Ort)?;
+        let attention_mask_tensor =
+            TensorRef::from_array_view(([batch_size, seq_len], attention_mask))
+                .map_err(RuntimeError::Ort)?;
+        let op_indices_tensor = TensorRef::from_array_view(([batch_size, num_options], op_indices))
+            .map_err(RuntimeError::Ort)?;
+
+        // 4. セッションプールから空きセッションを獲得 (非ブロッキング探索 -> ラウンドロビン待機)
+        let pool_len = self.sessions.len();
+        let mut acquired_guard = None;
+
+        // まずロックされていない空きセッションを優先探索
+        let start_idx = self.next_session_idx.fetch_add(1, Ordering::Relaxed) % pool_len;
+        for offset in 0..pool_len {
+            let idx = (start_idx + offset) % pool_len;
+            if let Ok(guard) = self.sessions[idx].try_lock() {
+                acquired_guard = Some(guard);
+                break;
+            }
+        }
+
+        // 全セッションがビジーの場合は指定セッションをブロック待機
+        let mut session = match acquired_guard {
+            Some(g) => g,
+            None => self.sessions[start_idx].lock().map_err(|e| {
+                RuntimeError::ModelContractViolation(format!("セッションロック獲得失敗: {e}。"))
+            })?,
+        };
+
+        // 5. 推論実行
+        let outputs = session
+            .run(ort::inputs![
+                TENSOR_INPUT_IDS => input_ids_tensor,
+                TENSOR_ATTENTION_MASK => attention_mask_tensor,
+                TENSOR_OP_INDICES => op_indices_tensor,
+            ])
+            .map_err(RuntimeError::Ort)?;
+
+        // 6. 出力抽出と検証
+        let logits_output = outputs.get(TENSOR_LOGITS).ok_or_else(|| {
+            RuntimeError::ModelContractViolation(format!(
+                "出力テンソル '{TENSOR_LOGITS}' が存在しません。"
+            ))
+        })?;
+
+        let (shape, logits_f32) = logits_output
+            .try_extract_tensor::<f32>()
+            .map_err(RuntimeError::Ort)?;
+
+        // 出力形状の契約検証
+        let shape_usize: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
+        dims.validate_output_shape(&shape_usize)?;
+
+        // 7. 出力値の有限性 (NaN/Inf) 検証および f32 -> f64 キャスト
+        for (i, &val) in logits_f32.iter().enumerate() {
+            if !val.is_finite() {
+                return Err(RuntimeError::InvalidTensorData(format!(
+                    "logits[{i}] に非有限値 (NaN または Inf) が検出されました: {val}。"
+                )));
+            }
+            out_logits[i] = val as f64;
+        }
+
+        Ok(())
+    }
+
+    /// 単一のトークナイズ済み質問を受け取り、ロジット配列を算出する。
+    ///
+    /// # 引数
+    /// - `tokenized`: 高速トークナイザーから得られた `TokenizedQuestion`。
+    ///
+    /// # 戻り値
+    /// 各選択肢に対応する決定ロジット (`Vec<f64>`)。
+    pub fn forward_question(&self, tokenized: &TokenizedQuestion) -> Result<Vec<f64>> {
+        let dims =
+            ModelInputDimensions::new(1, tokenized.input_ids.len(), tokenized.op_indices.len())?;
+
+        let logits = self.forward_raw(
+            &tokenized.input_ids,
+            &tokenized.attention_mask,
+            &tokenized.op_indices,
+            dims,
+        )?;
+
+        logits
+            .into_iter()
+            .next()
+            .ok_or_else(|| RuntimeError::InvalidTensorData("推論出力が空です。".to_string()))
+    }
+}
