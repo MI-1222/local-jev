@@ -6,3 +6,8 @@ edition = "2024"
 [dependencies]
 aquamarine = "0.6.0"
 local-jev-core = { workspace = true }
+tokenizers = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }

@@ -9,6 +9,12 @@
 
 pub use local_jev_core as core;
 
+pub mod error;
+pub mod tokenizer;
+
+pub use error::{Result, RuntimeError};
+pub use tokenizer::{JevTokenizer, TokenizedQuestion};
+
 /// ランタイムの初期化確認用関数。
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
