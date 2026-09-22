@@ -13,9 +13,12 @@ pub mod engine;
 pub mod error;
 pub mod tokenizer;
 
-pub use engine::{ExecutionProvider, InferenceEngine, OptimizationLevel, SessionConfig};
+pub use engine::{
+    BatchScratchpad, DEFAULT_MAX_BATCH_CHUNK_SIZE, ExecutionProvider, InferenceEngine,
+    OptimizationLevel, SessionConfig,
+};
 pub use error::{Result, RuntimeError};
-pub use tokenizer::{JevTokenizer, TokenizedQuestion};
+pub use tokenizer::{BatchTokenizedQuestions, JevTokenizer, TokenizedQuestion};
 
 /// ランタイムの初期化確認用関数。
 pub fn version() -> &'static str {

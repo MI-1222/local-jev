@@ -4,7 +4,10 @@
 //! 特殊トークンおよび `[OP]` マーカーの検証、State 優先トランケーション (State-Priority Truncation)、
 //! ならびに ONNX Runtime 入力用テンソルバッファの高速生成を行う。
 
+pub mod batch;
 pub mod prompt;
+
+pub use batch::BatchTokenizedQuestions;
 
 use std::path::Path;
 
