@@ -13,7 +13,7 @@ from typing import Any
 import yaml
 
 from contract import MAX_SEQUENCE_LENGTH
-from models.backbone import DEFAULT_MODERNBERT_MODEL_ID
+from models.backbone import DEFAULT_BACKBONE_MODEL_ID
 
 logger = logging.getLogger(__name__)
 
@@ -28,45 +28,50 @@ class SFTConfig:
         max_sequence_length (int): トークナイズ時の最大許容系列長。
         dataset_names (list[str]): 学習に使用するデータセット名のリスト。
         negative_ratio (float): 合成ネガティブサンプルの混入比率。
-        max_samples_per_dataset (int | None): データセットごとの最大取得サンプル数。デバッグや高速検証に使用。
+        max_samples_per_dataset (int | None): データセットごとの最大取得サンプル数。データバランシングや高速検証に使用。
         batch_size (int): デバイスあたりのミニバッチサイズ。
         gradient_accumulation_steps (int): 勾配累積ステップ数。
-        learning_rate_backbone (float): 事前学習済みバックボーンの学習率。
-        learning_rate_head (float): デシジョンヘッドおよび [OP] 埋め込みの学習率。
+        learning_rate_backbone (float): 事前学習済みバックボーン Transformer レイヤーの学習率。
+        learning_rate_embed (float): [OP] を含む入力埋め込み層の学習率。
+        learning_rate_head (float): デシジョンヘッド (および OptionGatherLayer) の学習率。
         weight_decay (float): オプティマイザの重み減衰率。
         num_epochs (int): 学習エポック数。
         warmup_ratio (float): ウォームアップステップの比率。
         mixed_precision (str): 混合精度モード ('no', 'fp16', 'bf16')。
         max_grad_norm (float): 勾配クリッピングの最大ノルム。
+        early_stopping_patience (int | None): 早期終了の許容エポック数。None の場合は早期終了なし。
+        eval_metric (str): 最良チェックポイントおよび早期終了の判定に使用するメトリクス名。
         seed (int): 乱数シード。
         output_dir (str): 成果物およびログのベース出力ディレクトリ。
     """
 
-    model_name_or_path: str = DEFAULT_MODERNBERT_MODEL_ID
+    model_name_or_path: str = DEFAULT_BACKBONE_MODEL_ID
     mlp_hidden_size: int | None = None
     max_sequence_length: int = MAX_SEQUENCE_LENGTH
 
     dataset_names: list[str] = field(
         default_factory=lambda: [
-            "banking77",
-            "clinc150",
-            "mnli_choice",
-            "mnli_noul",
-            "sst5",
+            "jglue_marc_ja",
+            "jglue_jnli",
+            "jglue_jsts",
+            "jglue_jcommonsenseqa",
         ]
     )
     negative_ratio: float = 0.15
-    max_samples_per_dataset: int | None = None
+    max_samples_per_dataset: int | None = 5000
 
     batch_size: int = 16
     gradient_accumulation_steps: int = 2
     learning_rate_backbone: float = 2e-5
-    learning_rate_head: float = 1e-4
+    learning_rate_embed: float = 5e-5
+    learning_rate_head: float = 2e-4
     weight_decay: float = 0.01
-    num_epochs: int = 3
+    num_epochs: int = 5
     warmup_ratio: float = 0.1
     mixed_precision: str = "no"
     max_grad_norm: float = 1.0
+    early_stopping_patience: int | None = 3
+    eval_metric: str = "choice_accuracy"
 
     seed: int = 42
     output_dir: str = "runs/sft"

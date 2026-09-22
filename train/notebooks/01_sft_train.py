@@ -79,11 +79,16 @@ def _():
     if str(train_root) not in sys.path:
         sys.path.insert(0, str(train_root))
 
-    from models.backbone import DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID
+    from models.backbone import (
+        DEFAULT_BACKBONE_MODEL_ID,
+        DEFAULT_MMBERT_MODEL_ID,
+        DEFAULT_MODERNBERT_MODEL_ID,
+    )
     from training.config import SFTConfig
     from training.trainer import SFTTrainer
 
     return (
+        DEFAULT_BACKBONE_MODEL_ID,
         DEFAULT_MMBERT_MODEL_ID,
         DEFAULT_MODERNBERT_MODEL_ID,
         Path,
@@ -102,28 +107,44 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID, mo):
+def _(
+    DEFAULT_BACKBONE_MODEL_ID,
+    DEFAULT_MMBERT_MODEL_ID,
+    DEFAULT_MODERNBERT_MODEL_ID,
+    mo,
+):
     # モデル設定
     model_selector = mo.ui.dropdown(
         options={
-            "ModernBERT-base (英語標準)": DEFAULT_MODERNBERT_MODEL_ID,
+            "ModernBERT-ja-130m (日本語推奨)": DEFAULT_BACKBONE_MODEL_ID,
             "mmBERT-base (多言語標準)": DEFAULT_MMBERT_MODEL_ID,
+            "ModernBERT-base (英語標準)": DEFAULT_MODERNBERT_MODEL_ID,
         },
-        value="ModernBERT-base (英語標準)",
+        value="ModernBERT-ja-130m (日本語推奨)",
         label="バックボーンモデル",
     )
 
     # データセット選択
     dataset_options = [
+        "jglue_marc_ja",
+        "jglue_jnli",
+        "jglue_jsts",
+        "jglue_jcommonsenseqa",
         "banking77",
         "clinc150",
         "mnli_choice",
         "mnli_noul",
         "sst5",
     ]
+    default_datasets = [
+        "jglue_marc_ja",
+        "jglue_jnli",
+        "jglue_jsts",
+        "jglue_jcommonsenseqa",
+    ]
     dataset_multiselect = mo.ui.multiselect(
         options=dataset_options,
-        value=dataset_options,
+        value=default_datasets,
         label="学習対象コーパス",
     )
 
@@ -139,8 +160,8 @@ def _(DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID, mo):
         start=10,
         stop=10000,
         step=50,
-        value=100,
-        label="最大サンプル数/データセット (高速検証用, 0=全件)",
+        value=5000,
+        label="最大サンプル数/データセット (データバランシング用, 0=全件)",
     )
 
     # 最適化設定
@@ -148,7 +169,7 @@ def _(DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID, mo):
         start=2,
         stop=64,
         step=2,
-        value=8,
+        value=16,
         label="バッチサイズ",
     )
 
@@ -156,7 +177,7 @@ def _(DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID, mo):
         start=1,
         stop=10,
         step=1,
-        value=2,
+        value=5,
         label="エポック数",
     )
 
@@ -166,9 +187,15 @@ def _(DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID, mo):
         label="バックボーン学習率",
     )
 
+    lr_embed_dropdown = mo.ui.dropdown(
+        options=["2e-5", "5e-5", "1e-4"],
+        value="5e-5",
+        label="埋め込み層 [OP] 学習率",
+    )
+
     lr_head_dropdown = mo.ui.dropdown(
         options=["5e-5", "1e-4", "2e-4", "3e-4"],
-        value="1e-4",
+        value="2e-4",
         label="デシジョンヘッド学習率",
     )
 
@@ -194,7 +221,7 @@ def _(DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID, mo):
 
     load_config_path_input = mo.ui.text(
         value="",
-        placeholder="例: runs/sft/sft_20260922_010000_ModernBERT-base/config.yaml",
+        placeholder="例: runs/sft/sft_20260922_010000_modernbert-ja-130m/config.yaml",
         label="過去の設定ファイルパスから読込 (任意)",
     )
     return (
@@ -203,6 +230,7 @@ def _(DEFAULT_MMBERT_MODEL_ID, DEFAULT_MODERNBERT_MODEL_ID, mo):
         epochs_slider,
         load_config_path_input,
         lr_backbone_dropdown,
+        lr_embed_dropdown,
         lr_head_dropdown,
         max_samples_input,
         mixed_precision_dropdown,
@@ -220,6 +248,7 @@ def _(
     epochs_slider,
     load_config_path_input,
     lr_backbone_dropdown,
+    lr_embed_dropdown,
     lr_head_dropdown,
     max_samples_input,
     mixed_precision_dropdown,
@@ -239,6 +268,7 @@ def _(
                     batch_size_slider,
                     epochs_slider,
                     lr_backbone_dropdown,
+                    lr_embed_dropdown,
                     lr_head_dropdown,
                 ]
             ),
@@ -260,6 +290,7 @@ def _(
     epochs_slider,
     load_config_path_input,
     lr_backbone_dropdown,
+    lr_embed_dropdown,
     lr_head_dropdown,
     max_samples_input,
     mixed_precision_dropdown,
@@ -288,6 +319,7 @@ def _(
             batch_size=int(batch_size_slider.value),
             num_epochs=int(epochs_slider.value),
             learning_rate_backbone=float(lr_backbone_dropdown.value),
+            learning_rate_embed=float(lr_embed_dropdown.value),
             learning_rate_head=float(lr_head_dropdown.value),
             mixed_precision=mixed_precision_dropdown.value,
             seed=int(seed_input.value),

@@ -18,7 +18,11 @@ from models.decision_head import JevDecisionModel
 from training.config import SFTConfig
 from training.loss import MaskedCrossEntropyLoss
 from training.metrics import MetricsTracker
-from training.trainer import SFTDataset, SFTTrainer
+from training.trainer import (
+    SFTDataset,
+    SFTTrainer,
+    get_optimizer_grouped_parameters,
+)
 
 
 def test_sft_config_yaml_json_serialization(tmp_path: Path) -> None:
@@ -27,8 +31,11 @@ def test_sft_config_yaml_json_serialization(tmp_path: Path) -> None:
         model_name_or_path="test/model-id",
         batch_size=8,
         learning_rate_backbone=1e-5,
+        learning_rate_embed=3e-5,
         learning_rate_head=5e-4,
         num_epochs=5,
+        early_stopping_patience=2,
+        eval_metric="choice_accuracy",
         seed=123,
         output_dir=str(tmp_path / "runs"),
     )
@@ -39,7 +46,10 @@ def test_sft_config_yaml_json_serialization(tmp_path: Path) -> None:
     loaded_yaml = SFTConfig.from_yaml(yaml_path)
     assert loaded_yaml.model_name_or_path == "test/model-id"
     assert loaded_yaml.batch_size == 8
+    assert loaded_yaml.learning_rate_embed == 3e-5
     assert loaded_yaml.learning_rate_head == 5e-4
+    assert loaded_yaml.early_stopping_patience == 2
+    assert loaded_yaml.eval_metric == "choice_accuracy"
     assert loaded_yaml.seed == 123
 
     # 2. JSON の検証
@@ -47,6 +57,7 @@ def test_sft_config_yaml_json_serialization(tmp_path: Path) -> None:
     config.save_json(json_path)
     loaded_json = SFTConfig.from_json(json_path)
     assert loaded_json.num_epochs == 5
+    assert loaded_json.learning_rate_embed == 3e-5
     assert loaded_json.output_dir == str(tmp_path / "runs")
 
     # 3. 自動判別 save() の検証
@@ -54,6 +65,57 @@ def test_sft_config_yaml_json_serialization(tmp_path: Path) -> None:
     config.save(auto_yaml)
     assert auto_yaml.exists()
     assert SFTConfig.from_yaml(auto_yaml).batch_size == 8
+
+
+def test_get_optimizer_grouped_parameters_differential_lr() -> None:
+    """3系統 Differential LR (Backbone, Embed, Head) および Weight Decay 分離の検証。"""
+
+    class MockEmbeddings(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.tok_embeddings = nn.Embedding(50, 16)
+
+    class MockLayer(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = nn.Linear(16, 16)
+            self.norm = nn.LayerNorm(16)
+
+    class MockBackbone(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = DummyBackboneConfig()
+            self.embeddings = MockEmbeddings()
+            self.layer = MockLayer()
+
+    backbone = MockBackbone()
+    model = JevDecisionModel(backbone=backbone, mlp_hidden_size=16)  # type: ignore[arg-type]
+
+    lr_backbone = 2e-5
+    lr_embed = 5e-5
+    lr_head = 2e-4
+    weight_decay = 0.01
+    head_weight_decay = 0.001
+
+    groups = get_optimizer_grouped_parameters(
+        model=model,
+        lr_backbone=lr_backbone,
+        lr_embed=lr_embed,
+        lr_head=lr_head,
+        weight_decay=weight_decay,
+        head_weight_decay=head_weight_decay,
+    )
+
+    # 少なくとも backbone, embed, head の各グループが存在すること
+    lrs = {g["lr"] for g in groups}
+    assert lrs == {lr_backbone, lr_embed, lr_head}, (
+        f"期待される学習率 {lr_backbone, lr_embed, lr_head} に対し、{lrs} が返されました。"
+    )
+
+    # weight_decay の値が 0.0 または指定された減衰率であること
+    for g in groups:
+        assert g["weight_decay"] in {0.0, weight_decay, head_weight_decay}
+        assert len(g["params"]) > 0
 
 
 def test_masked_cross_entropy_loss_padding_immunity() -> None:
@@ -269,3 +331,47 @@ def test_sft_trainer_dry_run(tmp_path: Path) -> None:
     assert (test_trainer.run_dir / "run_metadata.json").exists()
     assert (test_trainer.run_dir / "metrics_history.json").exists()
     assert (test_trainer.run_dir / "final_summary.md").exists()
+
+
+def test_run_sft_cli_argument_parsing(tmp_path: Path) -> None:
+    """run_sft の CLI 引数解析および設定上書きの動作検証。"""
+    from training.run_sft import build_config_from_args, parse_args
+
+    # 1. デフォルト設定の検証
+    args = parse_args([])
+    config = build_config_from_args(args)
+    assert config.learning_rate_backbone == 2e-5
+    assert config.learning_rate_embed == 5e-5
+    assert config.learning_rate_head == 2e-4
+    assert config.num_epochs == 5
+
+    # 2. CLI 引数による上書きの検証
+    cli_args = [
+        "--model-name-or-path",
+        "custom/model",
+        "--dataset-names",
+        "jglue_jnli",
+        "jglue_jsts",
+        "--lr-backbone",
+        "1e-5",
+        "--lr-embed",
+        "3e-5",
+        "--lr-head",
+        "1e-4",
+        "--num-epochs",
+        "10",
+        "--batch-size",
+        "32",
+        "--output-dir",
+        str(tmp_path / "custom_run"),
+    ]
+    parsed = parse_args(cli_args)
+    custom_config = build_config_from_args(parsed)
+    assert custom_config.model_name_or_path == "custom/model"
+    assert custom_config.dataset_names == ["jglue_jnli", "jglue_jsts"]
+    assert custom_config.learning_rate_backbone == 1e-5
+    assert custom_config.learning_rate_embed == 3e-5
+    assert custom_config.learning_rate_head == 1e-4
+    assert custom_config.num_epochs == 10
+    assert custom_config.batch_size == 32
+    assert custom_config.output_dir == str(tmp_path / "custom_run")
