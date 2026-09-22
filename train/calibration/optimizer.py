@@ -121,6 +121,30 @@ class LogitCache:
         )
 
 
+def compute_bucket_chance_level(op_mask: Tensor) -> float:
+    """バケット内の有効候補マスクから期待偶然確率 (Chance Level) を動的に算出する。
+
+    数理仕様:
+    バケット内に候補数 K_i が異なるサンプルが混在する場合でも、
+    各サンプルの偶然確率 1 / K_i の算術平均をとることで公平なチャンスレベルを導出する。
+    $$\\text{Chance Level} = \\frac{1}{N} \\sum_{i=1}^N \\frac{1}{K_i}$$
+
+    Args:
+        op_mask (Tensor): 有効候補マスク `[N, K]`。
+
+    Returns:
+        float: 期待偶然確率 (0.0 〜 1.0)。サンプル数が 0 の場合は 0.0。
+    """
+    if op_mask.size(0) == 0:
+        return 0.0
+    candidate_counts = op_mask.sum(dim=-1).float()
+    valid_mask = candidate_counts > 0
+    if not valid_mask.any():
+        return 0.0
+    sample_chance = 1.0 / candidate_counts[valid_mask]
+    return float(sample_chance.mean().item())
+
+
 def collect_env_metadata(config: CalibrationRunConfig) -> dict[str, Any]:
     """実行環境および Git 追跡情報を収集する。
 
@@ -286,11 +310,14 @@ class TemperatureOptimizer:
         op_mask: Tensor,
         tau_min: float | None = None,
         tau_max: float | None = None,
+        reg_lambda: float | None = None,
     ) -> float:
-        """単一バケットのロジットに対して 1 変数凸最適化を行い、最適温度 tau* を算出する。
+        """単一バケットのロジットに対して正則化付き 1 変数凸最適化を行い、最適温度 tau* を算出する。
 
         目的関数:
-        ホールドアウトデータに対する負の対数尤度 (Masked NLL) の最小化。
+        ホールドアウトデータに対する負の対数尤度 (Masked NLL) と
+        対数温度事前分布ペナルティ (lambda * (ln tau)^2) の和を最小化する。
+        $$\\mathcal{L}_{\\text{obj}}(\\tau) = \\mathcal{L}_{\\text{NLL}}(\\tau) + \\lambda (\\ln \\tau)^2$$
         最適化前後で精度不変性 (Accuracy Invariance) が保たれていることを自動検証する。
 
         Args:
@@ -299,18 +326,23 @@ class TemperatureOptimizer:
             op_mask (Tensor): 有効候補マスク `[N, K]`。
             tau_min (float | None): 探索下限 (None 時は config 値)。
             tau_max (float | None): 探索上限 (None 時は config 値)。
+            reg_lambda (float | None): 正則化ペナルティ係数 lambda (None 時は config 値)。
 
         Returns:
             float: 最適温度係数 tau*。
         """
         min_tau = tau_min if tau_min is not None else self.config.tau_min
         max_tau = tau_max if tau_max is not None else self.config.tau_max
+        lam = reg_lambda if reg_lambda is not None else self.config.reg_lambda
 
         if logits.size(0) == 0:
             return self.config.default_temperature
 
         def objective(tau: float) -> float:
-            return compute_masked_nll(logits, labels, op_mask, temperature=tau)
+            safe_tau = max(tau, 1e-4)
+            nll = compute_masked_nll(logits, labels, op_mask, temperature=safe_tau)
+            penalty = lam * (np.log(safe_tau) ** 2)
+            return nll + penalty
 
         res = minimize_scalar(
             objective,
@@ -333,6 +365,78 @@ class TemperatureOptimizer:
 
         return float(np.clip(opt_tau, min_tau, max_tau))
 
+    def _calibrate_single_bucket(
+        self,
+        b_logits: Tensor,
+        b_labels: Tensor,
+        b_op_mask: Tensor,
+        question_type: str,
+        bucket_expr: str,
+    ) -> tuple[float, dict[str, Any]]:
+        """単一バケットに対してサンプル数判定、精度ゲーティング、および最適化を実行する。
+
+        数理判定仕様:
+        1. サンプル数が min_samples_per_bucket 未満の場合は SPARSE_FALLBACK。
+        2. 検証正解率が (期待偶然確率 * accuracy_gating_factor) 以下の場合は ACCURACY_GATED。
+        3. 上記を満たす場合のみ正則化付き凸最適化を実行し OPTIMIZED。
+
+        Args:
+            b_logits (Tensor): ロジットテンソル `[N, K]`。
+            b_labels (Tensor): 正解インデックス `[N]`。
+            b_op_mask (Tensor): 有効候補マスク `[N, K]`。
+            question_type (str): 質問プリミティブ名。
+            bucket_expr (str): バケット表現。
+
+        Returns:
+            tuple[float, dict[str, Any]]: (導出温度, バケットメトリクス辞書)。
+        """
+        sample_count = int(b_logits.size(0))
+        chance_level = compute_bucket_chance_level(b_op_mask)
+        gating_threshold = chance_level * self.config.accuracy_gating_factor
+        acc_pre = compute_accuracy(b_logits, b_labels, b_op_mask)
+
+        if sample_count < self.config.min_samples_per_bucket:
+            tau = self.config.default_temperature
+            is_fallback = True
+            status = "SPARSE_FALLBACK"
+            reason = "サンプル数不足"
+        elif acc_pre <= gating_threshold:
+            tau = self.config.default_temperature
+            is_fallback = True
+            status = "ACCURACY_GATED"
+            reason = f"精度ゲーティング作動 (正解率 {acc_pre:.4f} <= 閾値 {gating_threshold:.4f})"
+        else:
+            tau = self.optimize_scalar(b_logits, b_labels, b_op_mask)
+            is_fallback = False
+            status = "OPTIMIZED"
+            reason = "正則化付き最適化完了"
+
+        tau = round(tau, 4)
+        eval_pre = self.evaluator.evaluate(
+            b_logits, b_labels, b_op_mask, temperature=1.0
+        )
+        eval_post = self.evaluator.evaluate(
+            b_logits, b_labels, b_op_mask, temperature=tau
+        )
+
+        metrics = {
+            "question_type": question_type,
+            "bucket": bucket_expr,
+            "samples": sample_count,
+            "is_fallback": is_fallback,
+            "status": status,
+            "reason": reason,
+            "temperature": tau,
+            "chance_level": round(chance_level, 4),
+            "gating_threshold": round(gating_threshold, 4),
+            "accuracy_pre": round(acc_pre, 4),
+            "pre_calibration": eval_pre,
+            "post_calibration": eval_post,
+            "ece_delta": round(eval_post["ece"] - eval_pre["ece"], 4),
+            "nll_delta": round(eval_post["nll"] - eval_pre["nll"], 4),
+        }
+        return tau, metrics
+
     def calibrate(
         self,
         cache: LogitCache,
@@ -350,8 +454,6 @@ class TemperatureOptimizer:
         """
         choice_temps: dict[str, float] = {}
         score_temps: dict[str, float] = {}
-        noul_temp = self.config.default_temperature
-
         bucket_metrics: dict[str, Any] = {}
 
         # 1. Choice 型のバケット別探索
@@ -359,98 +461,29 @@ class TemperatureOptimizer:
             b_logits, b_labels, b_op_mask = cache.filter_by_bucket(
                 QuestionType.CHOICE, b_expr
             )
-            sample_count = int(b_logits.size(0))
-
-            if sample_count >= self.config.min_samples_per_bucket:
-                tau = self.optimize_scalar(b_logits, b_labels, b_op_mask)
-                is_fallback = False
-            else:
-                tau = self.config.default_temperature
-                is_fallback = True
-
-            choice_temps[b_expr] = round(tau, 4)
-
-            # メトリクス比較
-            eval_pre = self.evaluator.evaluate(
-                b_logits, b_labels, b_op_mask, temperature=1.0
+            tau, metrics = self._calibrate_single_bucket(
+                b_logits, b_labels, b_op_mask, "choice", b_expr
             )
-            eval_post = self.evaluator.evaluate(
-                b_logits, b_labels, b_op_mask, temperature=tau
-            )
-            bucket_metrics[f"choice_{b_expr}"] = {
-                "question_type": "choice",
-                "bucket": b_expr,
-                "samples": sample_count,
-                "is_fallback": is_fallback,
-                "temperature": round(tau, 4),
-                "pre_calibration": eval_pre,
-                "post_calibration": eval_post,
-                "ece_delta": round(eval_post["ece"] - eval_pre["ece"], 4),
-                "nll_delta": round(eval_post["nll"] - eval_pre["nll"], 4),
-            }
+            choice_temps[b_expr] = tau
+            bucket_metrics[f"choice_{b_expr}"] = metrics
 
         # 2. Score 型のバケット別探索
         for b_expr in SCORE_BUCKETS:
             b_logits, b_labels, b_op_mask = cache.filter_by_bucket(
                 QuestionType.SCORE, b_expr
             )
-            sample_count = int(b_logits.size(0))
-
-            if sample_count >= self.config.min_samples_per_bucket:
-                tau = self.optimize_scalar(b_logits, b_labels, b_op_mask)
-                is_fallback = False
-            else:
-                tau = self.config.default_temperature
-                is_fallback = True
-
-            score_temps[b_expr] = round(tau, 4)
-
-            eval_pre = self.evaluator.evaluate(
-                b_logits, b_labels, b_op_mask, temperature=1.0
+            tau, metrics = self._calibrate_single_bucket(
+                b_logits, b_labels, b_op_mask, "score", b_expr
             )
-            eval_post = self.evaluator.evaluate(
-                b_logits, b_labels, b_op_mask, temperature=tau
-            )
-            bucket_metrics[f"score_{b_expr}"] = {
-                "question_type": "score",
-                "bucket": b_expr,
-                "samples": sample_count,
-                "is_fallback": is_fallback,
-                "temperature": round(tau, 4),
-                "pre_calibration": eval_pre,
-                "post_calibration": eval_post,
-                "ece_delta": round(eval_post["ece"] - eval_pre["ece"], 4),
-                "nll_delta": round(eval_post["nll"] - eval_pre["nll"], 4),
-            }
+            score_temps[b_expr] = tau
+            bucket_metrics[f"score_{b_expr}"] = metrics
 
         # 3. Noul 型の探索
         n_logits, n_labels, n_op_mask = cache.filter_by_bucket(QuestionType.NOUL)
-        sample_count = int(n_logits.size(0))
-        if sample_count >= self.config.min_samples_per_bucket:
-            noul_temp = self.optimize_scalar(n_logits, n_labels, n_op_mask)
-            is_fallback = False
-        else:
-            noul_temp = self.config.default_temperature
-            is_fallback = True
-
-        noul_temp = round(noul_temp, 4)
-        eval_pre = self.evaluator.evaluate(
-            n_logits, n_labels, n_op_mask, temperature=1.0
+        noul_temp, noul_metrics = self._calibrate_single_bucket(
+            n_logits, n_labels, n_op_mask, "noul", NOUL_BUCKET
         )
-        eval_post = self.evaluator.evaluate(
-            n_logits, n_labels, n_op_mask, temperature=noul_temp
-        )
-        bucket_metrics["noul"] = {
-            "question_type": "noul",
-            "bucket": NOUL_BUCKET,
-            "samples": sample_count,
-            "is_fallback": is_fallback,
-            "temperature": noul_temp,
-            "pre_calibration": eval_pre,
-            "post_calibration": eval_post,
-            "ece_delta": round(eval_post["ece"] - eval_pre["ece"], 4),
-            "nll_delta": round(eval_post["nll"] - eval_pre["nll"], 4),
-        }
+        bucket_metrics["noul"] = noul_metrics
 
         # 4. 全体加重集計
         total_pre_ece = 0.0
@@ -600,6 +633,7 @@ class TemperatureOptimizer:
             f"- **目標 ECE (< 0.10)**: **{status}** (事後 ECE: `{post_ece:.4f}`, 事前: `{pre_ece:.4f}`)",
             f"- **平均 NLL 改善**: `{pre_nll:.4f}` → `{post_nll:.4f}` (Δ: `{post_nll - pre_nll:+.4f}`)",
             f"- **総検証サンプル数**: {metrics_summary['total_samples']} 件",
+            f"- **較正ハイパーパラメータ**: 正則化強度 $\\lambda = {self.config.reg_lambda}$, ゲーティング倍率 = {self.config.accuracy_gating_factor}",
             "",
             "## 1. 導出された最適温度マップ (`calibration.json`)",
             "",
@@ -609,8 +643,8 @@ class TemperatureOptimizer:
             "",
             "## 2. バケット別較正性能の比較",
             "",
-            "| 質問タイプ | バケット | サンプル数 | 最適温度 $\\tau^*$ | 事前 ECE | 事後 ECE | ECE 改善幅 | 状態 |",
-            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
+            "| 質問タイプ | バケット | サンプル数 | 最適温度 $\\tau^*$ | 事前 ECE | 事後 ECE | 事前精度 | Chance Level | 状態 (判定理由) |",
+            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
         ]
 
         for m in metrics_summary["buckets"].values():
@@ -620,10 +654,20 @@ class TemperatureOptimizer:
             tau = m["temperature"]
             b_pre_ece = m["pre_calibration"]["ece"]
             b_post_ece = m["post_calibration"]["ece"]
-            delta = m["ece_delta"]
-            fallback_label = "フォールバック" if m["is_fallback"] else "最適化完了"
+            acc_pre = m.get("accuracy_pre", m["pre_calibration"].get("accuracy", 0.0))
+            chance_level = m.get("chance_level", 0.0)
+            status_type = m.get(
+                "status", "OPTIMIZED" if not m["is_fallback"] else "SPARSE_FALLBACK"
+            )
+            if status_type == "OPTIMIZED":
+                status_label = "✅ 最適化完了"
+            elif status_type == "ACCURACY_GATED":
+                status_label = f"🛡️ 精度ゲーティング ({m.get('reason', '偶然水準以下')})"
+            else:
+                status_label = "⚠️ サンプル不足"
+
             lines.append(
-                f"| {q_type} | `{bucket}` | {samples} | **{tau:.4f}** | {b_pre_ece:.4f} | {b_post_ece:.4f} | {delta:+.4f} | {fallback_label} |"
+                f"| {q_type} | `{bucket}` | {samples} | **{tau:.4f}** | {b_pre_ece:.4f} | {b_post_ece:.4f} | {acc_pre:.4f} | {chance_level:.4f} | {status_label} |"
             )
 
         lines.extend(

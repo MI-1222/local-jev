@@ -25,6 +25,7 @@ from calibration.optimizer import (
     LogitCache,
     TemperatureOptimizer,
     collect_env_metadata,
+    compute_bucket_chance_level,
 )
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "collect_env_metadata",
     "compute_accuracy",
     "compute_brier_score",
+    "compute_bucket_chance_level",
     "compute_ece",
     "compute_masked_nll",
     "compute_reliability_diagram_data",

@@ -29,6 +29,9 @@ def _(mo):
     3. **期待較正誤差 (ECE) < 0.10 の達成**:
        ホールドアウト検証セット上の負の対数尤度 (Masked NLL) を最小化する温度 $\tau^*$ を同定することで、
        信頼できる確率的決定(確信度ゲーティング)を実現します。
+    4. **対数温度事前分布正則化と精度ゲーティング**:
+       モデルが未学習水準（偶然確率付近）のバケットにおいて温度が上限 5.0 に張り付いて一様分布化するのを防ぐため、
+       目的関数にペナルティ $\lambda (\ln \tau)^2$ を課し、正解率が偶然水準以下のバケットは最適化を拒絶して $\tau = 1.0$ に固定します。
     """)
 
 
@@ -39,26 +42,28 @@ def _(mo):
         subgraph Data ["1. ホールドアウト検証データ & ロジット収集"]
             M["学習済みモデル (SFT / RLCD)"] --> FWD["推論実行 (torch.no_grad)"]
             V["検証データセット (Validation Set)"] --> FWD
-            FWD --> Cache["LogitCache<br>(未スケーリング生ロジット, op_mask, labels, タイプ, 候補数)"]
+            FWD --> Cache["LogitCache<br>(生ロジット, op_mask, labels, 候補数)"]
         end
 
-        subgraph Split ["2. バケット別スライシング"]
+        subgraph Split ["2. バケット別スライシング & 精度検査"]
             Cache --> C["Choice: '2', '3-5', '6-10', '11+'"]
             Cache --> S["Score: '2-5', '6-10'"]
             Cache --> N["Noul: 真偽判定"]
         end
 
-        subgraph Optimize ["3. 1変数スカラー最適化 (Bounded Brent 法)"]
-            C & S & N --> Opt["scipy.optimize.minimize_scalar<br>tau* = argmin NLL(tau)"]
-            Opt --> Fallback["スパースバケット安全フォールバック<br>(サンプル数 < 閾値 時は default_temp)"]
+        subgraph Gate ["3. 安全防壁 & 最適化"]
+            C & S & N --> Check{"サンプル数 & 精度判定"}
+            Check -- "サンプル不足" --> FB1["スパースフォールバック<br>(tau = 1.0)"]
+            Check -- "正解率 <= ChanceLevel * factor" --> FB2["精度ゲーティング作動<br>(tau = 1.0)"]
+            Check -- "正常" --> Opt["正則化付き凸最適化<br>min NLL(tau) + lambda*(ln tau)^2"]
         end
 
         subgraph Evaluation ["4. 成果物永続化 (Rust 契約互換)"]
-            Fallback --> CJ["calibration.json (Rust local-jev-core 契約)"]
-            Fallback --> REP["calibration_metrics.json / summary.md / config.yaml"]
+            FB1 & FB2 & Opt --> CJ["calibration.json (Rust 契約)"]
+            FB1 & FB2 & Opt --> REP["calibration_metrics.json / summary.md"]
         end
 
-        Data --> Split --> Optimize --> Evaluation
+        Data --> Split --> Gate --> Evaluation
     """)
 
 
@@ -172,6 +177,22 @@ def _(mo, train_root):
         placeholder="runs/calibration/calib_.../calibration_run_config.yaml",
     )
 
+    reg_lambda_slider = mo.ui.slider(
+        start=0.0,
+        stop=1.0,
+        step=0.05,
+        value=0.2,
+        label="対数正則化強度 lambda (0.0=無制約)",
+    )
+
+    gating_factor_input = mo.ui.number(
+        start=1.0,
+        stop=2.0,
+        step=0.05,
+        value=1.15,
+        label="精度ゲーティング倍率 (Chance Level 乗数)",
+    )
+
     run_button = mo.ui.run_button(label="🚀 温度較正を実行する")
 
     ui_panel = mo.vstack(
@@ -180,15 +201,18 @@ def _(mo, train_root):
             ckpt_dropdown,
             tau_range_slider,
             mo.hstack([min_samples_input, max_samples_input]),
+            mo.hstack([reg_lambda_slider, gating_factor_input]),
             load_config_input,
             run_button,
         ]
     )
     return (
         ckpt_dropdown,
+        gating_factor_input,
         load_config_input,
         max_samples_input,
         min_samples_input,
+        reg_lambda_slider,
         run_button,
         tau_range_slider,
         ui_panel,
@@ -225,10 +249,12 @@ def _(
     QuestionType,
     TemperatureOptimizer,
     ckpt_dropdown,
+    gating_factor_input,
     load_config_input,
     max_samples_input,
     min_samples_input,
     mo,
+    reg_lambda_slider,
     tau_range_slider,
     torch,
     train_root,
@@ -251,6 +277,8 @@ def _(
             min_samples_per_bucket=int(min_samples_input.value),
             max_val_samples=int(max_samples_input.value),
             output_dir=str(train_root / "runs" / "calibration"),
+            reg_lambda=float(reg_lambda_slider.value),
+            accuracy_gating_factor=float(gating_factor_input.value),
         )
 
     # ロジットキャッシュの取得 (実モデルまたは合成シミュレーションデータ)
@@ -427,16 +455,25 @@ def _(calib_contract, metrics_summary, mo, saved_path):
     # テーブル用 Markdown
     rows = []
     for _b in metrics_summary["buckets"].values():
-        fb_str = "⚠️ フォールバック" if _b["is_fallback"] else "最適化完了"
+        _st = _b.get(
+            "status", "OPTIMIZED" if not _b["is_fallback"] else "SPARSE_FALLBACK"
+        )
+        if _st == "OPTIMIZED":
+            fb_str = "✅ 最適化完了"
+        elif _st == "ACCURACY_GATED":
+            fb_str = "🛡️ 精度ゲーティング"
+        else:
+            fb_str = "⚠️ サンプル不足"
+        chance_str = f"{_b.get('chance_level', 0.0):.1%}"
         rows.append(
             f"| `{_b['question_type']}` | `{_b['bucket']}` | {_b['samples']} | **{_b['temperature']:.4f}** | "
             f"{_b['pre_calibration']['ece']:.4f} | {_b['post_calibration']['ece']:.4f} | "
-            f"{_b['ece_delta']:+.4f} | {_b['pre_calibration']['accuracy']:.2%} | {fb_str} |"
+            f"{_b['ece_delta']:+.4f} | {_b['pre_calibration']['accuracy']:.2%} | {chance_str} | {fb_str} |"
         )
     table_md = "\n".join(
         [
-            "| 質問タイプ | バケット | サンプル数 | 最適温度 $\\tau^*$ | 事前 ECE | 事後 ECE | ECE 改善幅 | 精度 (不変) | 状態 |",
-            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+            "| 質問タイプ | バケット | サンプル数 | 最適温度 $\\tau^*$ | 事前 ECE | 事後 ECE | ECE 改善幅 | 精度 (不変) | Chance Level | 状態 |",
+            "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |",
             *rows,
         ]
     )
