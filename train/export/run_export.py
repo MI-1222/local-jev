@@ -5,6 +5,7 @@ Rust 本番推論ランタイム向けの配布バンドル (models/default/) �
 """
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ from export.bundle import create_artifact_bundle
 from export.exporter import DEFAULT_OPSET_VERSION, export_onnx_model
 from export.validator import DEFAULT_ATOL, DEFAULT_RTOL, validate_onnx_parity
 from models.backbone import (
-    DEFAULT_MODERNBERT_MODEL_ID,
+    DEFAULT_BACKBONE_MODEL_ID,
 )
 from models.decision_head import JevDecisionModel
 
@@ -79,13 +80,16 @@ def find_latest_calibration(base_dir: Path | str) -> Path | None:
 
 def load_model_from_checkpoint(
     checkpoint_dir: Path,
-    backbone_name_or_path: str = DEFAULT_MODERNBERT_MODEL_ID,
+    backbone_name_or_path: str = DEFAULT_BACKBONE_MODEL_ID,
 ) -> tuple[JevDecisionModel, PreTrainedTokenizerFast]:
     """チェックポイントディレクトリからモデルとトークナイザーを復元する。
 
+    チェックポイントディレクトリまたはその親ディレクトリに `config.json` が存在し、
+    `model_name_or_path` が定義されている場合はそれを最優先でバックボーンとして使用する。
+
     Args:
         checkpoint_dir (Path): チェックポイントディレクトリ。
-        backbone_name_or_path (str): バックボーン識別子。
+        backbone_name_or_path (str): バックボーン識別子のデフォルト値。
 
     Returns:
         tuple[JevDecisionModel, PreTrainedTokenizerFast]:
@@ -101,13 +105,37 @@ def load_model_from_checkpoint(
             f"チェックポイントファイルが見つかりません: {model_pt_path}。"
         )
 
+    # config.json からのバックボーン自動検出
+    resolved_backbone = backbone_name_or_path
+    for candidate_config in [
+        checkpoint_dir / "config.json",
+        checkpoint_dir.parent / "config.json",
+    ]:
+        if candidate_config.exists():
+            try:
+                with open(candidate_config, encoding="utf-8") as f:
+                    cfg_data = json.load(f)
+                if isinstance(cfg_data, dict) and "model_name_or_path" in cfg_data:
+                    resolved_backbone = str(cfg_data["model_name_or_path"])
+                    logger.info(
+                        "config.json よりバックボーンモデルを自動検出しました: %s",
+                        resolved_backbone,
+                    )
+                    break
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(
+                    "config.json のパースに失敗しました (%s): %s",
+                    candidate_config,
+                    e,
+                )
+
     # トークナイザーの読み込み元 (チェックポイント同梱優先、なければベース)
     tok_dir = checkpoint_dir / "tokenizer"
-    tok_path = str(tok_dir) if tok_dir.exists() else backbone_name_or_path
+    tok_path = str(tok_dir) if tok_dir.exists() else resolved_backbone
 
     logger.info(
         "バックボーン (%s) およびトークナイザー (%s) を初期化中...",
-        backbone_name_or_path,
+        resolved_backbone,
         tok_path,
     )
     # トークナイザーの準備
@@ -120,7 +148,7 @@ def load_model_from_checkpoint(
 
     # バックボーンの準備
     backbone = AutoModel.from_pretrained(
-        backbone_name_or_path,
+        resolved_backbone,
         dtype=torch.float32,
     )
     backbone.resize_token_embeddings(len(tokenizer))
@@ -169,9 +197,17 @@ def run_pipeline(args: argparse.Namespace) -> int:
     if args.checkpoint:
         checkpoint_dir = Path(args.checkpoint)
     else:
-        checkpoint_dir = find_latest_checkpoint(train_root / "runs" / "sft")
-        if checkpoint_dir is None:
-            checkpoint_dir = find_latest_checkpoint(train_root / "runs" / "rlcd")
+        candidate_dirs: list[Path] = []
+        for run_sub in ["sft", "smoke_test", "rlcd"]:
+            found = find_latest_checkpoint(train_root / "runs" / run_sub)
+            if found:
+                candidate_dirs.append(found)
+        if candidate_dirs:
+            # 最終更新日時が最新のチェックポイントを選択
+            candidate_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            checkpoint_dir = candidate_dirs[0]
+        else:
+            checkpoint_dir = None
 
     if checkpoint_dir is None or not checkpoint_dir.exists():
         logger.error(
@@ -197,7 +233,10 @@ def run_pipeline(args: argparse.Namespace) -> int:
 
     # 3. モデルとトークナイザーのロード
     try:
-        model, tokenizer = load_model_from_checkpoint(checkpoint_dir)
+        model, tokenizer = load_model_from_checkpoint(
+            checkpoint_dir,
+            backbone_name_or_path=args.backbone,
+        )
     except Exception:
         logger.exception("モデルの復元に失敗しました。")
         return 1
@@ -279,6 +318,12 @@ def main() -> None:
         type=str,
         default=None,
         help="ロードする学習済みチェックポイントディレクトリパス",
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default=DEFAULT_BACKBONE_MODEL_ID,
+        help=f"使用するバックボーンモデル識別子 (デフォルト: {DEFAULT_BACKBONE_MODEL_ID})",
     )
     parser.add_argument(
         "--calibration",

@@ -30,9 +30,9 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String), String> {
     let (host, port) = if let Some(idx) = host_port.find(':') {
         let host = &host_port[..idx];
         let port_str = &host_port[idx + 1..];
-        let port = port_str.parse::<u16>().map_err(|e| {
-            format!("ポート番号のパースに失敗しました: '{port_str}' ({e})。")
-        })?;
+        let port = port_str
+            .parse::<u16>()
+            .map_err(|e| format!("ポート番号のパースに失敗しました: '{port_str}' ({e})。"))?;
         (host.to_string(), port)
     } else {
         (host_port.to_string(), 80)
@@ -51,7 +51,9 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String), String> {
 ///
 /// # 引数
 /// - `args`: ヘルスチェック対象 URL およびタイムアウト設定。
-pub fn run_healthcheck(args: HealthcheckArgs) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub fn run_healthcheck(
+    args: HealthcheckArgs,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (host, port, path) = parse_http_url(&args.url)?;
     let timeout = Duration::from_secs(args.timeout_secs);
 
@@ -105,7 +107,10 @@ pub fn run_healthcheck(args: HealthcheckArgs) -> Result<(), Box<dyn std::error::
         match stream.read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => response_bytes.extend_from_slice(&buffer[..n]),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
                 return Err("応答読み取りがタイムアウトしました。".into());
             }
             Err(e) => return Err(e.into()),
@@ -123,14 +128,20 @@ pub fn run_healthcheck(args: HealthcheckArgs) -> Result<(), Box<dyn std::error::
     }
 
     let status_code = parts[1].parse::<u16>().map_err(|e| {
-        format!("ステータスコードのパースに失敗しました: '{}' ({e})。", parts[1])
+        format!(
+            "ステータスコードのパースに失敗しました: '{}' ({e})。",
+            parts[1]
+        )
     })?;
 
     if status_code == 200 {
         tracing::debug!("ヘルスチェック成功: {status_line}。");
         Ok(())
     } else {
-        Err(format!("ヘルスチェック失敗 (ステータスコード {status_code}): '{status_line}'。").into())
+        Err(
+            format!("ヘルスチェック失敗 (ステータスコード {status_code}): '{status_line}'。")
+                .into(),
+        )
     }
 }
 

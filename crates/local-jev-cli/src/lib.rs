@@ -40,7 +40,12 @@ pub enum Commands {
         port: u16,
 
         /// モデルファイル格納ディレクトリ。
-        #[arg(short, long, env = "LOCAL_JEV_MODEL_DIR", default_value = "models/default")]
+        #[arg(
+            short,
+            long,
+            env = "LOCAL_JEV_MODEL_DIR",
+            default_value = "models/default"
+        )]
         model_dir: PathBuf,
 
         /// セッションプールサイズ。
@@ -63,7 +68,12 @@ pub enum Commands {
     /// サーバーエンドポイントの死活監視・準備状態確認を実行する。
     Healthcheck {
         /// 監視対象 URL。
-        #[arg(short, long, env = "LOCAL_JEV_HEALTHCHECK_URL", default_value = "http://127.0.0.1:3000/ready")]
+        #[arg(
+            short,
+            long,
+            env = "LOCAL_JEV_HEALTHCHECK_URL",
+            default_value = "http://127.0.0.1:3000/ready"
+        )]
         url: String,
 
         /// 応答タイムアウト秒数。

@@ -104,26 +104,30 @@ impl JevTokenizer {
             });
         }
 
-        // 先頭特殊トークン (CLS / BOS) の同定
+        // 先頭特殊トークン (CLS / BOS) の同定。
+        // ModernBERT-ja は `<cls>` を使用し、BERT系は `[CLS]`、RoBERTa/Gemma等は `<s>` / `[BOS]` を使用する。
         let leading_special_tokens: Vec<u32> = inner
-            .token_to_id("[CLS]")
+            .token_to_id("<cls>")
+            .or_else(|| inner.token_to_id("[CLS]"))
             .or_else(|| inner.token_to_id("<s>"))
             .or_else(|| inner.token_to_id("[BOS]"))
             .map(|id| vec![id])
             .unwrap_or_default();
 
-        // 末尾特殊トークン (SEP / EOS) の同定
+        // 末尾特殊トークン (SEP / EOS) の同定。
+        // ModernBERT-ja は `<sep>` を使用し、BERT系は `[SEP]`、RoBERTa/Gemma等は `</s>` / `[EOS]` を使用する。
         let trailing_special_tokens: Vec<u32> = inner
-            .token_to_id("[SEP]")
+            .token_to_id("<sep>")
+            .or_else(|| inner.token_to_id("[SEP]"))
             .or_else(|| inner.token_to_id("</s>"))
             .or_else(|| inner.token_to_id("[EOS]"))
             .map(|id| vec![id])
             .unwrap_or_default();
 
-        // パディングトークン (PAD) の同定
+        // パディングトークン (PAD) の同定。
         let pad_token_id: Option<u32> = inner
-            .token_to_id("[PAD]")
-            .or_else(|| inner.token_to_id("<pad>"));
+            .token_to_id("<pad>")
+            .or_else(|| inner.token_to_id("[PAD]"));
 
         // 固定 Prefix ("State: ") のトークン列を事前エンコード・キャッシュ
         let state_prefix_encoding = inner
