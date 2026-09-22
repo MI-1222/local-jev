@@ -1163,7 +1163,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-jev-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aquamarine",
  "clap",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "local-jev-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aquamarine",
  "indexmap",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "local-jev-runtime"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aquamarine",
  "indexmap",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "local-jev-server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aquamarine",
  "axum",
@@ -1271,7 +1271,7 @@ checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
 name = "matchers"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
@@ -2523,7 +2523,7 @@ dependencies = [
 
 [[package]]
 name = "tracing-log"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3"
 dependencies = [
