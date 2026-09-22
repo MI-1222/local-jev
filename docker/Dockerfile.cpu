@@ -1,0 +1,105 @@
+# ==============================================================================
+# Local-Jev CPU 推論コンテナイメージ
+# 
+# 多段マルチステージビルド (cargo-chef) による極小フットプリント,
+# エアギャップ完全対応 (外部通信ゼロ) の本番向けコンテナ定義。
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Stage 1: Rust & cargo-chef ビルド環境構築 (Ubuntu 24.04: GCC 14 / glibc 2.39)
+# ------------------------------------------------------------------------------
+FROM ubuntu:24.04 AS chef
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    cmake \
+    clang \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust ツールチェーンおよび cargo-chef の導入
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal && \
+    cargo install cargo-chef
+
+WORKDIR /app
+
+# ------------------------------------------------------------------------------
+# Stage 2: 依存関係レシピの抽出 (Planner)
+# ------------------------------------------------------------------------------
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ------------------------------------------------------------------------------
+# Stage 3: ビルドステージ (Builder)
+# ------------------------------------------------------------------------------
+FROM chef AS builder
+
+# 依存クレートのみを先行キャッシュビルド
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# ソースコード全体を投入して local-jev-cli をビルド
+COPY . .
+RUN cargo build --release -p local-jev-cli
+
+# ONNX Runtime 動的ライブラリ (*.so) の抽出
+RUN mkdir -p /app/dylibs && \
+    touch /app/dylibs/.keep && \
+    find /app/target/release -name "libonnxruntime*.so*" -exec cp {} /app/dylibs/ \; || true
+
+# ------------------------------------------------------------------------------
+# Stage 4: 最小ランタイムイメージ (Runtime: Ubuntu 24.04 ベース)
+# ------------------------------------------------------------------------------
+FROM ubuntu:24.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 最小限の SSL 証明書と C++ ランタイム
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ONNX Runtime 共有ライブラリの配置
+COPY --from=builder /app/dylibs/ /usr/local/lib/
+RUN rm -f /usr/local/lib/.keep && ldconfig
+
+# local-jev CLI バイナリの配置
+COPY --from=builder /app/target/release/local-jev /usr/local/bin/local-jev
+
+# 最小権限の非 root ユーザー作成 (UID: 10001, GID: 10001)
+RUN groupadd -g 10001 jev && \
+    useradd -u 10001 -g jev -s /bin/false -M jev && \
+    mkdir -p /models && \
+    chown -R jev:jev /models
+
+# 実行ユーザーの切り替え
+USER jev
+
+# 外部通信完全遮断およびランタイム環境変数の設定
+ENV LD_LIBRARY_PATH=/usr/local/lib \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    LOCAL_JEV_HOST=0.0.0.0 \
+    LOCAL_JEV_PORT=3000 \
+    LOCAL_JEV_MODEL_DIR=/models/default
+
+# HTTP API ポート公開
+EXPOSE 3000
+
+# 自己完結型ヘルスチェック (curl 不要)
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+
+# デフォルト Entrypoint
+ENTRYPOINT ["/usr/local/bin/local-jev"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "3000", "--model-dir", "/models/default"]

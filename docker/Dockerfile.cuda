@@ -1,0 +1,108 @@
+# ==============================================================================
+# Local-Jev GPU (CUDA) 推論コンテナイメージ
+# 
+# NVIDIA CUDA 12.6 / cuDNN アクセラレータ対応 (Ubuntu 24.04: GCC 14 / glibc 2.39),
+# 多段マルチステージビルドによる高スループット推論コンテナ定義。
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Stage 1: Rust & cargo-chef ビルド環境構築
+# ------------------------------------------------------------------------------
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS chef
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    cmake \
+    clang \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust ツールチェーンのインストール
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal && \
+    cargo install cargo-chef
+
+WORKDIR /app
+
+# ------------------------------------------------------------------------------
+# Stage 2: 依存関係レシピの抽出 (Planner)
+# ------------------------------------------------------------------------------
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ------------------------------------------------------------------------------
+# Stage 3: ビルドステージ (Builder)
+# ------------------------------------------------------------------------------
+FROM chef AS builder
+
+# 依存クレートを --features cuda で先行キャッシュビルド
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --features cuda --recipe-path recipe.json
+
+# ソースコード全体を投入して local-jev-cli をビルド
+COPY . .
+RUN cargo build --release -p local-jev-cli --features cuda
+
+# ONNX Runtime 動的ライブラリ (*.so) の抽出
+RUN mkdir -p /app/dylibs && \
+    touch /app/dylibs/.keep && \
+    find /app/target/release -name "libonnxruntime*.so*" -exec cp {} /app/dylibs/ \; || true
+
+# ------------------------------------------------------------------------------
+# Stage 4: GPU 最小ランタイムイメージ (Runtime)
+# ------------------------------------------------------------------------------
+FROM nvidia/cuda:12.6.0-runtime-ubuntu24.04 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ONNX Runtime 共有ライブラリの配置
+COPY --from=builder /app/dylibs/ /usr/local/lib/
+RUN rm -f /usr/local/lib/.keep && ldconfig
+
+# local-jev CLI バイナリの配置
+COPY --from=builder /app/target/release/local-jev /usr/local/bin/local-jev
+
+# 非 root ユーザー作成 (UID: 10001, GID: 10001)
+RUN groupadd -g 10001 jev && \
+    useradd -u 10001 -g jev -s /bin/false -M jev && \
+    mkdir -p /models /tmp/ort_trt_cache && \
+    chown -R jev:jev /models /tmp/ort_trt_cache
+
+# 実行ユーザーの切り替え
+USER jev
+
+# NVIDIA コンテナ環境変数およびランタイム設定
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    LD_LIBRARY_PATH=/usr/local/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH \
+    ORT_TENSORRT_CACHE_PATH=/tmp/ort_trt_cache \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    LOCAL_JEV_HOST=0.0.0.0 \
+    LOCAL_JEV_PORT=3000 \
+    LOCAL_JEV_MODEL_DIR=/models/default \
+    LOCAL_JEV_PROVIDER=cuda
+
+# HTTP API ポート公開
+EXPOSE 3000
+
+# 自己完結型ヘルスチェック
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+
+# デフォルト Entrypoint
+ENTRYPOINT ["/usr/local/bin/local-jev"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "3000", "--model-dir", "/models/default", "--provider", "cuda"]

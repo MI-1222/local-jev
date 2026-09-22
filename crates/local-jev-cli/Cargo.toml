@@ -3,18 +3,28 @@ name = "local-jev-cli"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "local-jev"
+path = "src/main.rs"
+
 [dependencies]
 aquamarine = "0.6.0"
 local-jev-core = { workspace = true }
 local-jev-runtime = { workspace = true }
 local-jev-server = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
+
+[features]
+default = []
+coreml = ["local-jev-runtime/coreml"]
+cuda = ["local-jev-runtime/cuda"]
+tensorrt = ["local-jev-runtime/tensorrt"]
 
 [dev-dependencies]
 serde_json = { workspace = true }

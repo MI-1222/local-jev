@@ -11,6 +11,7 @@
 use clap::Parser;
 use local_jev_cli::commands::benchmark::{BenchmarkArgs, run_benchmark};
 use local_jev_cli::commands::export_openapi::run_export_openapi;
+use local_jev_cli::commands::healthcheck::{HealthcheckArgs, run_healthcheck};
 use local_jev_cli::commands::quantize::{QuantizeArgs, run_quantize};
 use local_jev_cli::commands::serve::{ServeArgs, run_serve};
 use local_jev_cli::{Cli, Commands};
@@ -22,6 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match cli.command {
         Commands::ExportOpenapi { output } => {
             run_export_openapi(output)?;
+        }
+        Commands::Healthcheck { url, timeout_secs } => {
+            let args = HealthcheckArgs { url, timeout_secs };
+            run_healthcheck(args)?;
         }
         Commands::Serve {
             host,

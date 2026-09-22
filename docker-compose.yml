@@ -1,0 +1,80 @@
+services:
+  # ----------------------------------------------------------------------------
+  # CPU 推論サービス (デフォルト)
+  # ----------------------------------------------------------------------------
+  local-jev-cpu:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu
+    image: local-jev:cpu
+    container_name: local-jev-cpu
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - LOCAL_JEV_HOST=0.0.0.0
+      - LOCAL_JEV_PORT=3000
+      - LOCAL_JEV_MODEL_DIR=/models/default
+      - LOCAL_JEV_POOL_SIZE=2
+      - LOCAL_JEV_INTRA_THREADS=2
+      - LOCAL_JEV_INTER_THREADS=1
+      - RUST_LOG=local_jev_server=info,local_jev_cli=info,tower_http=info
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    volumes:
+      - ./models/default:/models/default:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+        reservations:
+          cpus: "1.0"
+          memory: 1G
+
+  # ----------------------------------------------------------------------------
+  # GPU 推論サービス (NVIDIA GPU 環境用, profile: gpu)
+  # ----------------------------------------------------------------------------
+  local-jev-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cuda
+    image: local-jev:cuda
+    container_name: local-jev-gpu
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - LOCAL_JEV_HOST=0.0.0.0
+      - LOCAL_JEV_PORT=3000
+      - LOCAL_JEV_MODEL_DIR=/models/default
+      - LOCAL_JEV_POOL_SIZE=4
+      - LOCAL_JEV_PROVIDER=cuda
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - RUST_LOG=local_jev_server=info,local_jev_cli=info,tower_http=info
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    volumes:
+      - ./models/default:/models/default:ro
+      - /tmp/ort_trt_cache:/tmp/ort_trt_cache
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

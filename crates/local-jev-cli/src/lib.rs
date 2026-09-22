@@ -32,32 +32,43 @@ pub enum Commands {
     /// Jev 互換 HTTP API サーバーを起動する。
     Serve {
         /// バインド先ホストアドレス。
-        #[arg(short = 'H', long, default_value = "0.0.0.0")]
+        #[arg(short = 'H', long, env = "LOCAL_JEV_HOST", default_value = "0.0.0.0")]
         host: String,
 
         /// バインド先ポート番号。
-        #[arg(short, long, default_value_t = 3000)]
+        #[arg(short, long, env = "LOCAL_JEV_PORT", default_value_t = 3000)]
         port: u16,
 
         /// モデルファイル格納ディレクトリ。
-        #[arg(short, long, default_value = "models/default")]
+        #[arg(short, long, env = "LOCAL_JEV_MODEL_DIR", default_value = "models/default")]
         model_dir: PathBuf,
 
         /// セッションプールサイズ。
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, env = "LOCAL_JEV_POOL_SIZE", default_value_t = 2)]
         pool_size: usize,
 
         /// 優先 Execution Provider (auto, coreml, cuda, tensorrt, cpu)。
-        #[arg(long)]
+        #[arg(long, env = "LOCAL_JEV_PROVIDER")]
         provider: Option<String>,
 
         /// 単一オペレータ内の並列スレッド数 (intra-op)。
-        #[arg(long)]
+        #[arg(long, env = "LOCAL_JEV_INTRA_THREADS")]
         intra_threads: Option<usize>,
 
         /// 複数オペレータ間の並列スレッド数 (inter-op)。
-        #[arg(long)]
+        #[arg(long, env = "LOCAL_JEV_INTER_THREADS")]
         inter_threads: Option<usize>,
+    },
+
+    /// サーバーエンドポイントの死活監視・準備状態確認を実行する。
+    Healthcheck {
+        /// 監視対象 URL。
+        #[arg(short, long, env = "LOCAL_JEV_HEALTHCHECK_URL", default_value = "http://127.0.0.1:3000/ready")]
+        url: String,
+
+        /// 応答タイムアウト秒数。
+        #[arg(short, long, default_value_t = 3)]
+        timeout_secs: u64,
     },
 
     /// インプロセスでの推論レイテンシおよびスループットを計測する。

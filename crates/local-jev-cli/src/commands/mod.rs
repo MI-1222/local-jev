@@ -4,5 +4,6 @@
 
 pub mod benchmark;
 pub mod export_openapi;
+pub mod healthcheck;
 pub mod quantize;
 pub mod serve;

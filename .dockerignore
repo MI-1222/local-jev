@@ -1,0 +1,18 @@
+# ビルド成果物・一時ディレクトリ
+target/
+**/.ruff_cache/
+**/__pycache__/
+*.pyc
+
+# バージョン管理・ローカル設定
+.git/
+.gitignore
+.gitattributes
+.DS_Store
+
+# 実験・学習コード (推論ランタイムビルドに不要)
+train/
+
+# ドキュメント・メモ
+*.md
+docs/

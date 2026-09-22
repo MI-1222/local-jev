@@ -221,6 +221,41 @@ fn test_parse_quantize_custom_options() {
 }
 
 #[test]
+fn test_parse_healthcheck_defaults() {
+    let args = ["local-jev", "healthcheck"];
+    let cli = Cli::try_parse_from(args).expect("引数パースに成功すること。");
+
+    match cli.command {
+        Commands::Healthcheck { url, timeout_secs } => {
+            assert_eq!(url, "http://127.0.0.1:3000/ready");
+            assert_eq!(timeout_secs, 3);
+        }
+        _ => panic!("Healthcheck コマンドがパースされること。"),
+    }
+}
+
+#[test]
+fn test_parse_healthcheck_custom() {
+    let args = [
+        "local-jev",
+        "healthcheck",
+        "-u",
+        "http://localhost:8080/health",
+        "-t",
+        "5",
+    ];
+    let cli = Cli::try_parse_from(args).expect("引数パースに成功すること。");
+
+    match cli.command {
+        Commands::Healthcheck { url, timeout_secs } => {
+            assert_eq!(url, "http://localhost:8080/health");
+            assert_eq!(timeout_secs, 5);
+        }
+        _ => panic!("Healthcheck コマンドがパースされること。"),
+    }
+}
+
+#[test]
 fn test_parse_invalid_command() {
     let args = ["local-jev", "unknown-command"];
     let result = Cli::try_parse_from(args);
