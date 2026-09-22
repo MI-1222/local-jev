@@ -209,7 +209,6 @@ class TemperatureOptimizer:
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     op_indices=op_indices,
-                    op_mask=op_mask,
                 )
 
                 batch_qtypes = batch["question_types"]

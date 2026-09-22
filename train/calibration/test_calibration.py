@@ -279,3 +279,56 @@ def test_contract_roundtrip_compatibility() -> None:
         assert (run_dir / "calibration_metrics.json").exists()
         assert (run_dir / "run_metadata.json").exists()
         assert (run_dir / "summary.md").exists()
+
+
+def test_collect_logits_signature() -> None:
+    """collect_logits が op_mask なしで model を呼び出し、正しく LogitCache を構築することを検証する。"""
+    from typing import Any
+
+    from torch import nn
+    from torch.utils.data import DataLoader, Dataset
+
+    class DummyModel(nn.Module):
+        def forward(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor,
+            op_indices: torch.Tensor,
+        ) -> torch.Tensor:
+            batch_size, num_options = op_indices.shape
+            return torch.zeros(batch_size, num_options)
+
+    class DummyDataset(Dataset[dict[str, Any]]):
+        def __len__(self) -> int:
+            return 1
+
+        def __getitem__(self, index: int) -> dict[str, Any]:
+            return {
+                "input_ids": torch.tensor([[1, 2, 3], [1, 2, 3]]),
+                "attention_mask": torch.tensor([[1, 1, 1], [1, 1, 1]]),
+                "op_indices": torch.tensor([[0, 1], [0, 1]]),
+                "op_mask": torch.tensor([[True, True], [True, True]]),
+                "labels": torch.tensor([0, 1]),
+                "question_types": [
+                    QuestionType.CHOICE.value,
+                    QuestionType.CHOICE.value,
+                ],
+            }
+
+    dataloader: DataLoader[dict[str, Any]] = DataLoader(
+        DummyDataset(),
+        batch_size=None,
+    )
+
+    optimizer = TemperatureOptimizer()
+    cache = optimizer.collect_logits(
+        model=DummyModel(),
+        dataloader=dataloader,
+        device=torch.device("cpu"),
+    )
+
+    assert cache.logits.shape == (2, 2)
+    assert cache.op_mask.shape == (2, 2)
+    assert cache.labels.shape == (2,)
+    assert len(cache.question_types) == 2
+    assert len(cache.candidate_counts) == 2
