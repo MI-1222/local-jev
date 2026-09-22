@@ -13,6 +13,8 @@ use crate::error::{CoreError, Result};
 /// 質問の決定プリミティブ種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "openapi", schema(rename_all = "lowercase"))]
 pub enum QuestionType {
     /// 候補選択(離散選択肢から最適な1つを選択)。
     Choice,
@@ -37,6 +39,7 @@ impl fmt::Display for QuestionType {
 /// 質問タイプに応じて Map、List、または未指定(None)のいずれかをとる。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub enum Criteria {
     /// Choice 型向け: 候補識別子(キー)と説明文(値)の順序付きマップ。
     Map(IndexMap<String, String>),
@@ -85,9 +88,11 @@ impl Criteria {
 
 /// 単一の質問定義。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Question {
     /// 質問プリミティブ種別(`choice`, `score`, `noul`)。
     #[serde(rename = "type")]
+    #[cfg_attr(feature = "openapi", schema(rename = "type"))]
     pub question_type: QuestionType,
 
     /// 評価内容に関する自然言語の指示文。
@@ -195,12 +200,14 @@ impl Question {
 
 /// Jev 互換 `POST /v1/systemone` リクエストペイロード。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SystemOneRequest {
     /// 使用するローカルモデル識別子(任意)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 
     /// 判断の材料となる非構造化コンテキストデータ(文字列、オブジェクト、配列など)。
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub state: serde_json::Value,
 
     /// 評価対象となる質問群のマップ(キーは質問識別子)。
@@ -244,6 +251,7 @@ impl SystemOneRequest {
 
 /// 単一の質問に対する判定結果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Answer {
     /// Choice 型の採択候補ラベル。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -328,6 +336,7 @@ impl Answer {
 ///
 /// System One モデルは文章生成を行わないため、`completion_tokens` は常に 0 となる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct Usage {
     /// 入力コンテキスト(State + Questions)のトークン総数。
     pub prompt_tokens: usize,
@@ -352,6 +361,7 @@ impl Usage {
 
 /// Jev 互換 `POST /v1/systemone` レスポンスペイロード。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct SystemOneResponse {
     /// 各 question_id に対応する判定結果マップ。
     pub answers: IndexMap<String, Answer>,

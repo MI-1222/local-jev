@@ -8,3 +8,10 @@ aquamarine = "0.6.0"
 local-jev-core = { workspace = true }
 local-jev-runtime = { workspace = true }
 local-jev-server = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

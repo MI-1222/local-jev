@@ -5,5 +5,26 @@ edition = "2024"
 
 [dependencies]
 aquamarine = "0.6.0"
-local-jev-core = { workspace = true }
+local-jev-core = { workspace = true, features = ["openapi"] }
 local-jev-runtime = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true, optional = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+default = ["swagger"]
+swagger = ["dep:utoipa-swagger-ui"]
+
+[dev-dependencies]
+http-body-util = "0.1"

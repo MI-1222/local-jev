@@ -9,3 +9,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 indexmap = { workspace = true }
 aquamarine = "0.6.0"
+utoipa = { workspace = true, optional = true }
+
+[features]
+openapi = ["dep:utoipa", "utoipa/indexmap"]
