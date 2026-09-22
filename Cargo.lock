@@ -1167,9 +1167,11 @@ version = "0.1.0"
 dependencies = [
  "aquamarine",
  "clap",
+ "indexmap",
  "local-jev-core",
  "local-jev-runtime",
  "local-jev-server",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

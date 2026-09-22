@@ -9,7 +9,7 @@ mod common;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{init_benchmark_app_state, BenchmarkStats, ScenarioBuilder};
+use common::{BenchmarkStats, ScenarioBuilder, init_benchmark_app_state};
 use local_jev_core::gating::{evaluate_answer_gating, evaluate_response_routing};
 use local_jev_core::schema::SystemOneRequest;
 
@@ -181,31 +181,73 @@ async fn test_pillar1_latency_profiling_and_breakdown() {
         overall_stats.push(stats.clone());
 
         // 平均内訳の算出
-        let avg_guard: f64 = guard_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-        let avg_tok: f64 = tok_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-        let avg_onnx: f64 = onnx_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-        let avg_math: f64 = math_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-        let avg_total: f64 = total_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
+        let avg_guard: f64 = guard_durations
+            .iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .sum::<f64>()
+            / iterations as f64;
+        let avg_tok: f64 = tok_durations
+            .iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .sum::<f64>()
+            / iterations as f64;
+        let avg_onnx: f64 = onnx_durations
+            .iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .sum::<f64>()
+            / iterations as f64;
+        let avg_math: f64 = math_durations
+            .iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .sum::<f64>()
+            / iterations as f64;
+        let avg_total: f64 = total_durations
+            .iter()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .sum::<f64>()
+            / iterations as f64;
 
         println!("### {}", name);
         println!("- 試行回数: {} 回, 質問数/Req: {} 問", iterations, q_count);
-        println!("- レイテンシ: p50 = {:.2} ms, p95 = {:.2} ms, p99 = {:.2} ms, Mean = {:.2} ms",
+        println!(
+            "- レイテンシ: p50 = {:.2} ms, p95 = {:.2} ms, p99 = {:.2} ms, Mean = {:.2} ms",
             stats.p50.as_secs_f64() * 1000.0,
             stats.p95.as_secs_f64() * 1000.0,
             stats.p99.as_secs_f64() * 1000.0,
             stats.mean.as_secs_f64() * 1000.0,
         );
-        println!("- スループット: RPS = {:.2} req/s, DPS = {:.2} decisions/s", stats.rps, stats.dps);
+        println!(
+            "- スループット: RPS = {:.2} req/s, DPS = {:.2} decisions/s",
+            stats.rps, stats.dps
+        );
         println!("- 内部区間内訳 (平均):");
-        println!("  1. ガードレール前処理: {:>6.2} ms ({:>5.1}%)", avg_guard, (avg_guard / avg_total) * 100.0);
-        println!("  2. トークナイズ      : {:>6.2} ms ({:>5.1}%)", avg_tok, (avg_tok / avg_total) * 100.0);
-        println!("  3. ONNX 推論 (ホット): {:>6.2} ms ({:>5.1}%)", avg_onnx, (avg_onnx / avg_total) * 100.0);
-        println!("  4. 決定数理・ゲーティング: {:>6.2} ms ({:>5.1}%)", avg_math, (avg_math / avg_total) * 100.0);
+        println!(
+            "  1. ガードレール前処理: {:>6.2} ms ({:>5.1}%)",
+            avg_guard,
+            (avg_guard / avg_total) * 100.0
+        );
+        println!(
+            "  2. トークナイズ      : {:>6.2} ms ({:>5.1}%)",
+            avg_tok,
+            (avg_tok / avg_total) * 100.0
+        );
+        println!(
+            "  3. ONNX 推論 (ホット): {:>6.2} ms ({:>5.1}%)",
+            avg_onnx,
+            (avg_onnx / avg_total) * 100.0
+        );
+        println!(
+            "  4. 決定数理・ゲーティング: {:>6.2} ms ({:>5.1}%)",
+            avg_math,
+            (avg_math / avg_total) * 100.0
+        );
         println!();
     }
 
     println!("#### [総合サマリーテーブル]");
-    println!("| シナリオ | サンプル数 | 最小 | p50 (中央値) | p95 | p99 | RPS | DPS (スループット) |");
+    println!(
+        "| シナリオ | サンプル数 | 最小 | p50 (中央値) | p95 | p99 | RPS | DPS (スループット) |"
+    );
     println!("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |");
     for s in &overall_stats {
         println!("{}", s.to_markdown_row());
@@ -215,7 +257,10 @@ async fn test_pillar1_latency_profiling_and_breakdown() {
     // シナリオ A (Lightweight) の p50 が CPU 目標 (< 300ms) を達成していることを検証
     let scenario_a = &overall_stats[0];
     let p50_millis = scenario_a.p50.as_secs_f64() * 1000.0;
-    println!("[判定] シナリオ A 単一即応 p50: {:.2} ms (目標 < 300.0 ms)", p50_millis);
+    println!(
+        "[判定] シナリオ A 単一即応 p50: {:.2} ms (目標 < 300.0 ms)",
+        p50_millis
+    );
     assert!(
         p50_millis < 300.0,
         "CPU環境での単一質問 p50 ({:.2} ms) が目標基準 300ms を超過しました。",

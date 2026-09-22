@@ -1,0 +1,465 @@
+//! # 推論レイテンシ・スループット測定ベンチマークコマンド
+//!
+//! ネットワークオーバーヘッドを排除したインプロセスエンジン直接駆動により、
+//! 単一質問、並列バッチ、大規模候補探索 (Coarse-to-Fine)、およびスクラッチパッド再利用時の
+//! 純粋な計算レイテンシとスループットを精密に計測する。
+
+use std::fs;
+use std::path::PathBuf;
+use std::time::Instant;
+
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+
+use local_jev_core::contract::calibration::CalibrationConfig;
+use local_jev_core::schema::Question;
+use local_jev_runtime::engine::coarse::CoarseToFineConfig;
+use local_jev_runtime::engine::{
+    BatchScratchpad, ExecutionProvider, InferenceEngine, SessionConfig,
+};
+use local_jev_runtime::tokenizer::JevTokenizer;
+
+use crate::commands::serve::{parse_provider, validate_model_dir};
+
+/// ベンチマーク実行構成パラメータ。
+#[derive(Debug, Clone)]
+pub struct BenchmarkArgs {
+    /// モデルファイル格納ディレクトリ。
+    pub model_dir: PathBuf,
+    /// 測定反復回数。
+    pub iterations: usize,
+    /// ウォームアップ反復回数。
+    pub warmup: usize,
+    /// 優先 Execution Provider。
+    pub provider: Option<String>,
+    /// 実行対象シナリオ ("all", "single", "batch", "coarse", "scratchpad")。
+    pub scenario: String,
+    /// CI 連携用 JSON 形式出力フラグ。
+    pub json: bool,
+}
+
+/// 単一シナリオの計測統計サマリー。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScenarioStats {
+    /// シナリオ識別名。
+    pub name: String,
+    /// 評価質問数。
+    pub total_decisions: usize,
+    /// 実行反復回数。
+    pub iterations: usize,
+    /// 最小レイテンシ (ミリ秒)。
+    pub min_ms: f64,
+    /// 平均レイテンシ (ミリ秒)。
+    pub mean_ms: f64,
+    /// 最大レイテンシ (ミリ秒)。
+    pub max_ms: f64,
+    /// 50 パーセンタイル (p50) レイテンシ (ミリ秒)。
+    pub p50_ms: f64,
+    /// 90 パーセンタイル (p90) レイテンシ (ミリ秒)。
+    pub p90_ms: f64,
+    /// 95 パーセンタイル (p95) レイテンシ (ミリ秒)。
+    pub p95_ms: f64,
+    /// 99 パーセンタイル (p99) レイテンシ (ミリ秒)。
+    pub p99_ms: f64,
+    /// スループット (decisions / 秒)。
+    pub throughput_dps: f64,
+}
+
+/// ベンチマーク全体の実行結果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkSuiteResult {
+    /// 使用した Execution Provider 名。
+    pub active_provider: String,
+    /// モデルディレクトリ。
+    pub model_dir: String,
+    /// 各シナリオの計測結果一覧。
+    pub scenarios: Vec<ScenarioStats>,
+}
+
+/// 時間測定値配列から統計量を算出する。
+fn compute_stats(name: &str, decisions_per_run: usize, durations_ms: &mut [f64]) -> ScenarioStats {
+    durations_ms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = durations_ms.len();
+
+    let min_ms = durations_ms.first().copied().unwrap_or(0.0);
+    let max_ms = durations_ms.last().copied().unwrap_or(0.0);
+    let sum: f64 = durations_ms.iter().sum();
+    let mean_ms = if n > 0 { sum / (n as f64) } else { 0.0 };
+
+    let p50_ms = percentile(durations_ms, 50.0);
+    let p90_ms = percentile(durations_ms, 90.0);
+    let p95_ms = percentile(durations_ms, 95.0);
+    let p99_ms = percentile(durations_ms, 99.0);
+
+    let throughput_dps = if mean_ms > 0.0 {
+        (decisions_per_run as f64) / (mean_ms / 1000.0)
+    } else {
+        0.0
+    };
+
+    ScenarioStats {
+        name: name.to_string(),
+        total_decisions: decisions_per_run * n,
+        iterations: n,
+        min_ms,
+        mean_ms,
+        max_ms,
+        p50_ms,
+        p90_ms,
+        p95_ms,
+        p99_ms,
+        throughput_dps,
+    }
+}
+
+/// パーセンタイル値を算出する。
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let idx = ((p / 100.0) * ((sorted.len() - 1) as f64)).round() as usize;
+    sorted[idx.min(sorted.len() - 1)]
+}
+
+/// ベンチマークコマンドを実行する。
+pub fn run_benchmark(args: BenchmarkArgs) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 1. モデルディレクトリ検証
+    if let Err(err) = validate_model_dir(&args.model_dir) {
+        eprintln!("エラー: {err}");
+        return Err(err.into());
+    }
+
+    // 2. セッション設定の構築
+    let mut session_config = SessionConfig::default();
+    if let Some(ref provider_str) = args.provider {
+        let provider = parse_provider(provider_str)?;
+        session_config.preferred_providers = match provider {
+            ExecutionProvider::Auto => SessionConfig::default().preferred_providers,
+            other => vec![other, ExecutionProvider::CPU],
+        };
+    }
+
+    let onnx_path = args.model_dir.join("model.onnx");
+    let tok_path = args.model_dir.join("tokenizer.json");
+    let calib_path = args.model_dir.join("calibration.json");
+
+    eprintln!(
+        "推論エンジンおよびトークナイザーをロード中 (パス: {})...",
+        args.model_dir.display()
+    );
+
+    let engine = InferenceEngine::new(&onnx_path, session_config)?;
+    let tokenizer = JevTokenizer::from_file(&tok_path)?;
+
+    let calib_config = if calib_path.exists() {
+        let calib_json = fs::read_to_string(&calib_path)?;
+        CalibrationConfig::from_json_str(&calib_json)?
+    } else {
+        CalibrationConfig::default()
+    };
+
+    let active_provider = engine.active_provider().name().to_string();
+    eprintln!("アクティブ Execution Provider: {active_provider}");
+    eprintln!(
+        "測定設定: 反復回数={}, ウォームアップ={}, シナリオ={}",
+        args.iterations, args.warmup, args.scenario
+    );
+
+    let mut suite_results = BenchmarkSuiteResult {
+        active_provider: active_provider.clone(),
+        model_dir: args.model_dir.display().to_string(),
+        scenarios: Vec::new(),
+    };
+
+    let scenario_filter = args.scenario.to_lowercase();
+    let should_run_single = scenario_filter == "all" || scenario_filter == "single";
+    let should_run_batch = scenario_filter == "all" || scenario_filter == "batch";
+    let should_run_coarse = scenario_filter == "all" || scenario_filter == "coarse";
+    let should_run_scratch = scenario_filter == "all" || scenario_filter == "scratchpad";
+
+    // --- シナリオ 1: Single Choice (K=3) ---
+    if should_run_single {
+        eprintln!("[1/6] Single Choice (K=3) を測定中...");
+        let state =
+            "顧客から注文キャンセルのリクエストを受信しました。注文ステータスは発送準備中です。";
+        let mut criteria = IndexMap::new();
+        criteria.insert(
+            "cancel_order".to_string(),
+            "注文を直ちにキャンセルする".to_string(),
+        );
+        criteria.insert(
+            "contact_support".to_string(),
+            "サポート窓口へ転送する".to_string(),
+        );
+        criteria.insert("ignore".to_string(), "特に対処せず保留する".to_string());
+        let question = Question::new_choice("適切な対応を選択してください。", criteria);
+
+        // ウォームアップ
+        for _ in 0..args.warmup {
+            let tokenized = tokenizer.encode_question(state, &question)?;
+            let _ = engine.forward_question(&tokenized)?;
+        }
+
+        // 本測定
+        let mut durations = Vec::with_capacity(args.iterations);
+        for _ in 0..args.iterations {
+            let start = Instant::now();
+            let tokenized = tokenizer.encode_question(state, &question)?;
+            let _ = engine.forward_question(&tokenized)?;
+            durations.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        suite_results
+            .scenarios
+            .push(compute_stats("Single Choice (K=3)", 1, &mut durations));
+    }
+
+    // --- シナリオ 2: Single Score (K=5) ---
+    if should_run_single {
+        eprintln!("[2/6] Single Score (K=5) を測定中...");
+        let state =
+            "過去 5 分間に不正なパスワード試行が同一 IP アドレスから 200 回検知されました。";
+        let criteria = vec![
+            "極めて安全 (影響なし)".to_string(),
+            "低リスク (要注視)".to_string(),
+            "中リスク (調査推奨)".to_string(),
+            "高リスク (要即時対応)".to_string(),
+            "致命的インシデント (全遮断)".to_string(),
+        ];
+        let question =
+            Question::new_score("セキュリティ脅威の深刻度を段階評価してください。", criteria);
+
+        // ウォームアップ
+        for _ in 0..args.warmup {
+            let tokenized = tokenizer.encode_question(state, &question)?;
+            let _ = engine.forward_question(&tokenized)?;
+        }
+
+        // 本測定
+        let mut durations = Vec::with_capacity(args.iterations);
+        for _ in 0..args.iterations {
+            let start = Instant::now();
+            let tokenized = tokenizer.encode_question(state, &question)?;
+            let _ = engine.forward_question(&tokenized)?;
+            durations.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        suite_results
+            .scenarios
+            .push(compute_stats("Single Score (K=5)", 1, &mut durations));
+    }
+
+    // --- シナリオ 3: Single Noul (真偽判定) ---
+    if should_run_single {
+        eprintln!("[3/6] Single Noul (真偽判定) を測定中...");
+        let state = "サーバーの CPU 使用率が 98%、空きメモリが 50MB 未満です。";
+        let question = Question::new_noul("直ちにアラートを発報すべき緊急事態ですか？");
+
+        // ウォームアップ
+        for _ in 0..args.warmup {
+            let tokenized = tokenizer.encode_question(state, &question)?;
+            let _ = engine.forward_question(&tokenized)?;
+        }
+
+        // 本測定
+        let mut durations = Vec::with_capacity(args.iterations);
+        for _ in 0..args.iterations {
+            let start = Instant::now();
+            let tokenized = tokenizer.encode_question(state, &question)?;
+            let _ = engine.forward_question(&tokenized)?;
+            durations.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        suite_results
+            .scenarios
+            .push(compute_stats("Single Noul (Binary)", 1, &mut durations));
+    }
+
+    // --- シナリオ 4: Batch Scaling (4, 8, 16 Questions) ---
+    if should_run_batch {
+        eprintln!("[4/6] Batch Scaling (並列質問バッチ) を測定中...");
+        let state = "ユーザーが新規アカウント登録を行い、プロファイル情報を入力しました。";
+
+        for &batch_size in &[4, 8, 16] {
+            let mut questions = IndexMap::with_capacity(batch_size);
+            for i in 0..batch_size {
+                let mut c = IndexMap::new();
+                c.insert(format!("approve_{i}"), "承認する".to_string());
+                c.insert(format!("review_{i}"), "審査に回す".to_string());
+                c.insert(format!("reject_{i}"), "却下する".to_string());
+                questions.insert(
+                    format!("q_{i}"),
+                    Question::new_choice(format!("質問項目 {i} の判定を行ってください。"), c),
+                );
+            }
+
+            // ウォームアップ
+            for _ in 0..args.warmup {
+                let batch = tokenizer.encode_batch_questions(state, &questions)?;
+                let _ = engine.forward_batch_tokenized(&batch)?;
+            }
+
+            // 本測定
+            let mut durations = Vec::with_capacity(args.iterations);
+            for _ in 0..args.iterations {
+                let start = Instant::now();
+                let batch = tokenizer.encode_batch_questions(state, &questions)?;
+                let _ = engine.forward_batch_tokenized(&batch)?;
+                durations.push(start.elapsed().as_secs_f64() * 1000.0);
+            }
+
+            suite_results.scenarios.push(compute_stats(
+                &format!("Batch Scaling (Q={batch_size})"),
+                batch_size,
+                &mut durations,
+            ));
+        }
+    }
+
+    // --- シナリオ 5: Coarse-to-Fine (K=77 大規模候補探索) ---
+    if should_run_coarse {
+        eprintln!("[5/6] Coarse-to-Fine (K=77 大規模候補) を測定中...");
+        let state =
+            "ATM から現金を引き出そうとしたところ、カードが取り込まれて返却されませんでした。";
+        let mut large_criteria = IndexMap::with_capacity(77);
+        for i in 0..77 {
+            large_criteria.insert(
+                format!("category_{i:02}"),
+                format!("バンキング意図カテゴリ {i:02} に関する手続き"),
+            );
+        }
+        let question = Question::new_choice("問い合わせの意図を分類してください。", large_criteria);
+        let coarse_config = CoarseToFineConfig {
+            threshold: 30,
+            top_m: 16,
+            ..Default::default()
+        };
+
+        // ウォームアップ
+        for _ in 0..args.warmup.min(5) {
+            let _ = engine.evaluate_question_coarse_to_fine(
+                &tokenizer,
+                state,
+                &question,
+                &calib_config,
+                &coarse_config,
+            )?;
+        }
+
+        let iterations = if scenario_filter == "all" && args.iterations > 20 {
+            eprintln!(
+                "Coarse-to-Fine シナリオは高負荷のため、全体ベンチマーク時は反復回数を 20 回に制限して実行します (個別実行時は --scenario coarse で全数実行可能)。"
+            );
+            20
+        } else {
+            args.iterations
+        };
+        let mut durations = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let start = Instant::now();
+            let _ = engine.evaluate_question_coarse_to_fine(
+                &tokenizer,
+                state,
+                &question,
+                &calib_config,
+                &coarse_config,
+            )?;
+            durations.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        suite_results
+            .scenarios
+            .push(compute_stats("Coarse-to-Fine (K=77)", 1, &mut durations));
+    }
+
+    // --- シナリオ 6: Scratchpad 再利用によるアロケーション抑制効果 ---
+    if should_run_scratch {
+        eprintln!("[6/6] Scratchpad 再利用効果を測定中 (Q=8)...");
+        let state = "注文履歴の確認と配送日時の変更手続きを受け付けました。";
+        let mut questions = IndexMap::with_capacity(8);
+        for i in 0..8 {
+            let mut c = IndexMap::new();
+            c.insert("allow".to_string(), "変更を許可する".to_string());
+            c.insert("deny".to_string(), "変更を拒否する".to_string());
+            questions.insert(
+                format!("check_{i}"),
+                Question::new_choice("変更可否を判定してください。", c),
+            );
+        }
+
+        let mut scratchpad = BatchScratchpad::default();
+
+        // ウォームアップ
+        for _ in 0..args.warmup {
+            let _ = engine.evaluate_batch_questions_with_scratchpad(
+                &tokenizer,
+                state,
+                &questions,
+                &calib_config,
+                &mut scratchpad,
+            )?;
+        }
+
+        // 本測定
+        let mut durations = Vec::with_capacity(args.iterations);
+        for _ in 0..args.iterations {
+            let start = Instant::now();
+            let _ = engine.evaluate_batch_questions_with_scratchpad(
+                &tokenizer,
+                state,
+                &questions,
+                &calib_config,
+                &mut scratchpad,
+            )?;
+            durations.push(start.elapsed().as_secs_f64() * 1000.0);
+        }
+
+        suite_results
+            .scenarios
+            .push(compute_stats("Scratchpad (Q=8)", 8, &mut durations));
+    }
+
+    // 4. 結果の出力
+    if args.json {
+        let json_output = serde_json::to_string_pretty(&suite_results)?;
+        println!("{json_output}");
+    } else {
+        render_table(&suite_results);
+    }
+
+    Ok(())
+}
+
+/// 計測結果を人間向けの整形テーブルとして標準出力に描画する。
+fn render_table(results: &BenchmarkSuiteResult) {
+    println!();
+    println!(
+        "========================================================================================================="
+    );
+    println!(
+        " Local-Jev 推論性能ベンチマーク (EP: {}, モデル: {})",
+        results.active_provider, results.model_dir
+    );
+    println!(
+        "========================================================================================================="
+    );
+    println!(
+        "{:<28} | {:>6} | {:>8} | {:>8} | {:>8} | {:>8} | {:>8} | {:>14}",
+        "シナリオ", "反復", "Min(ms)", "Mean(ms)", "P50(ms)", "P90(ms)", "P99(ms)", "Throughput"
+    );
+    println!(
+        "---------------------------------------------------------------------------------------------------------"
+    );
+
+    for s in &results.scenarios {
+        let throughput_str = format!("{:.1} dec/s", s.throughput_dps);
+        println!(
+            "{:<28} | {:>6} | {:>8.2} | {:>8.2} | {:>8.2} | {:>8.2} | {:>8.2} | {:>14}",
+            s.name, s.iterations, s.min_ms, s.mean_ms, s.p50_ms, s.p90_ms, s.p99_ms, throughput_str
+        );
+    }
+    println!(
+        "========================================================================================================="
+    );
+    println!();
+}

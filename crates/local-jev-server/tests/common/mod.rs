@@ -171,9 +171,18 @@ impl ScenarioBuilder {
         let mut questions = IndexMap::new();
 
         let mut criteria = IndexMap::new();
-        criteria.insert("shipping".to_string(), "配送状況や追跡番号に関する問い合わせ".to_string());
-        criteria.insert("address".to_string(), "配送先住所や宛先の変更に関する要望".to_string());
-        criteria.insert("other".to_string(), "それ以外のその他の問い合わせ".to_string());
+        criteria.insert(
+            "shipping".to_string(),
+            "配送状況や追跡番号に関する問い合わせ".to_string(),
+        );
+        criteria.insert(
+            "address".to_string(),
+            "配送先住所や宛先の変更に関する要望".to_string(),
+        );
+        criteria.insert(
+            "other".to_string(),
+            "それ以外のその他の問い合わせ".to_string(),
+        );
 
         questions.insert(
             "intent".to_string(),
@@ -185,7 +194,7 @@ impl ScenarioBuilder {
 
     /// シナリオ B: プレフィックス共有バッチ (State 500 tok 程度, 混合 8 問)。
     pub fn build_prefix_sharing_batch() -> SystemOneRequest {
-        let state = "【契約規約抜粋】第1条（目的）本規約は、当社が提供するクラウドストレージサービスの利用条件を定めるものです。利用者は本規約に同意した上で利用するものとします。第2条（アカウント管理）利用者は自己の責任においてパスワードを管理し、第三者への譲渡または貸与を禁止します。第3条（料金と支払）利用料金は月額1,000円とし、翌月末までにクレジットカード決済にて支払うものとします。遅延損害金は年14.6%とします。第4条（契約解除）当社は、利用者が規約に違反した場合、事前の催告なく即座に利用契約を解除できるものとします。第5条（免責事項）天災地変等の不可抗力によりデータが消失した場合、当社は一切の損害賠償責任を負わないものとします。".repeat(2);
+        let state = "【契約規約抜粋】第1条(目的)本規約は、当社が提供するクラウドストレージサービスの利用条件を定めるものです。利用者は本規約に同意した上で利用するものとします。第2条(アカウント管理)利用者は自己の責任においてパスワードを管理し、第三者への譲渡または貸与を禁止します。第3条(料金と支払)利用料金は月額1,000円とし、翌月末までにクレジットカード決済にて支払うものとします。遅延損害金は年14.6%とします。第4条(契約解除)当社は、利用者が規約に違反した場合、事前の催告なく即座に利用契約を解除できるものとします。第5条(免責事項)天災地変等の不可抗力によりデータが消失した場合、当社は一切の損害賠償責任を負わないものとします。".repeat(2);
 
         let mut questions = IndexMap::new();
 
@@ -194,10 +203,16 @@ impl ScenarioBuilder {
         c1.insert("cloud".to_string(), "クラウドサービス利用規約".to_string());
         c1.insert("sla".to_string(), "保守サービス品質合意書".to_string());
         c1.insert("nda".to_string(), "秘密保持契約書".to_string());
-        questions.insert("contract_type".to_string(), Question::new_choice("契約類型を判定してください。", c1));
+        questions.insert(
+            "contract_type".to_string(),
+            Question::new_choice("契約類型を判定してください。", c1),
+        );
 
         // Q2: Noul 遅延損害金の有無
-        questions.insert("has_penalty".to_string(), Question::new_noul("遅延損害金に関する規定が存在しますか？"));
+        questions.insert(
+            "has_penalty".to_string(),
+            Question::new_noul("遅延損害金に関する規定が存在しますか？"),
+        );
 
         // Q3: Score 重要度
         let c3 = vec![
@@ -205,20 +220,32 @@ impl ScenarioBuilder {
             "一般的な契約約款".to_string(),
             "極めて厳格な法的拘束力".to_string(),
         ];
-        questions.insert("importance_score".to_string(), Question::new_score("規約の重要度を1から3で評価してください。", c3));
+        questions.insert(
+            "importance_score".to_string(),
+            Question::new_score("規約の重要度を1から3で評価してください。", c3),
+        );
 
         // Q4: Noul 免責事項の有無
-        questions.insert("has_disclaimer".to_string(), Question::new_noul("天災地変に関する免責条項が含まれていますか？"));
+        questions.insert(
+            "has_disclaimer".to_string(),
+            Question::new_noul("天災地変に関する免責条項が含まれていますか？"),
+        );
 
         // Q5: Choice 支払方法
         let mut c5 = IndexMap::new();
         c5.insert("credit".to_string(), "クレジットカード決済".to_string());
         c5.insert("bank".to_string(), "銀行振込決済".to_string());
         c5.insert("cash".to_string(), "現金払い".to_string());
-        questions.insert("payment_method".to_string(), Question::new_choice("指定されている支払方法を判定してください。", c5));
+        questions.insert(
+            "payment_method".to_string(),
+            Question::new_choice("指定されている支払方法を判定してください。", c5),
+        );
 
         // Q6: Noul 即時解除規定の有無
-        questions.insert("can_terminate_immediately".to_string(), Question::new_noul("規約違反時の事前催告なき即時契約解除規定が存在しますか？"));
+        questions.insert(
+            "can_terminate_immediately".to_string(),
+            Question::new_noul("規約違反時の事前催告なき即時契約解除規定が存在しますか？"),
+        );
 
         // Q7: Score リスク度評価
         let c7 = vec![
@@ -226,14 +253,20 @@ impl ScenarioBuilder {
             "中程度のリスク".to_string(),
             "重大な法的リスク".to_string(),
         ];
-        questions.insert("risk_score".to_string(), Question::new_score("利用者の免責制限リスクを評価してください。", c7));
+        questions.insert(
+            "risk_score".to_string(),
+            Question::new_score("利用者の免責制限リスクを評価してください。", c7),
+        );
 
         // Q8: Choice 月額料金区分
         let mut c8 = IndexMap::new();
         c8.insert("low".to_string(), "月額3000円未満の低価格帯".to_string());
         c8.insert("mid".to_string(), "月額3000円以上10000円未満".to_string());
         c8.insert("high".to_string(), "月額10000円以上の高価格帯".to_string());
-        questions.insert("price_tier".to_string(), Question::new_choice("月額利用料金の価格帯を分類してください。", c8));
+        questions.insert(
+            "price_tier".to_string(),
+            Question::new_choice("月額利用料金の価格帯を分類してください。", c8),
+        );
 
         SystemOneRequest::new(state, questions)
     }
@@ -252,7 +285,10 @@ impl ScenarioBuilder {
 
         questions.insert(
             "banking_category".to_string(),
-            Question::new_choice("77カテゴリから最も該当する問い合わせ分類を特定してください。", criteria),
+            Question::new_choice(
+                "77カテゴリから最も該当する問い合わせ分類を特定してください。",
+                criteria,
+            ),
         );
 
         SystemOneRequest::new(state, questions)
@@ -260,20 +296,31 @@ impl ScenarioBuilder {
 
     /// シナリオ D: マイクロバッチ・長文境界値 (Stress/Heavy: State 2000+ tok, 質問 16 問)。
     pub fn build_stress_heavy() -> SystemOneRequest {
-        let paragraph = "大規模分散システムにおけるコンセンサスアルゴリズムとしてRaftが広く採用されている。リーダー選出、ログ複製、安全性の3つの独立したサブ問題に分割することで理解容易性を高めている。ノード障害時のスプリットブレインを防ぐため、過半数（Quorum）の合意を必須要件とする。ネットワーク分断発生時でも一貫性（Consistency）を優先するCP型システムとして動作する。";
+        let paragraph = "大規模分散システムにおけるコンセンサスアルゴリズムとしてRaftが広く採用されている。リーダー選出、ログ複製、安全性の3つの独立したサブ問題に分割することで理解容易性を高めている。ノード障害時のスプリットブレインを防ぐため、過半数(Quorum)の合意を必須要件とする。ネットワーク分断発生時でも一貫性(Consistency)を優先するCP型システムとして動作する。";
         let state = paragraph.repeat(15);
 
         let mut questions = IndexMap::new();
         for i in 1..=16 {
             let qid = format!("consensus_q{i:02}");
             let q = if i % 2 == 0 {
-                Question::new_noul(format!("設問{i}: 過半数のノード合意がコミット条件に含まれますか？"))
+                Question::new_noul(format!(
+                    "設問{i}: 過半数のノード合意がコミット条件に含まれますか？"
+                ))
             } else {
                 let mut c = IndexMap::new();
-                c.insert("cp".to_string(), "一貫性と分断耐性を重視するCP型設計".to_string());
-                c.insert("ap".to_string(), "可用性と分断耐性を重視するAP型設計".to_string());
+                c.insert(
+                    "cp".to_string(),
+                    "一貫性と分断耐性を重視するCP型設計".to_string(),
+                );
+                c.insert(
+                    "ap".to_string(),
+                    "可用性と分断耐性を重視するAP型設計".to_string(),
+                );
                 c.insert("ca".to_string(), "分断耐性を考慮しないCA型設計".to_string());
-                Question::new_choice(format!("設問{i}: CAP定理におけるシステムの分類を選択してください。"), c)
+                Question::new_choice(
+                    format!("設問{i}: CAP定理におけるシステムの分類を選択してください。"),
+                    c,
+                )
             };
             questions.insert(qid, q);
         }
