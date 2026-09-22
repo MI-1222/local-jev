@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from scipy.optimize import minimize_scalar
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
@@ -101,10 +102,22 @@ class LogitCache:
             )
 
         idx_tensor = torch.tensor(indices, dtype=torch.long)
+        sub_logits = self.logits[idx_tensor]
+        sub_labels = self.labels[idx_tensor]
+        sub_mask = self.op_mask[idx_tensor]
+
+        # バケット内の最大有効候補数に合わせて末尾のパディング列をトリムする。
+        max_active = (
+            int(sub_mask.sum(dim=-1).max().item()) if sub_mask.size(0) > 0 else 0
+        )
+        if 0 < max_active < sub_logits.size(-1):
+            sub_logits = sub_logits[:, :max_active]
+            sub_mask = sub_mask[:, :max_active]
+
         return (
-            self.logits[idx_tensor],
-            self.labels[idx_tensor],
-            self.op_mask[idx_tensor],
+            sub_logits,
+            sub_labels,
+            sub_mask,
         )
 
 
@@ -228,9 +241,28 @@ class TemperatureOptimizer:
                 if max_samples > 0 and collected_count >= max_samples:
                     break
 
-        all_logits = torch.cat(logits_list, dim=0)
-        all_op_mask = torch.cat(op_mask_list, dim=0)
-        all_labels = torch.cat(labels_list, dim=0)
+        # バッチ間で選択肢数が異なる場合に備え、最大選択肢数に合わせてパディングして結合する。
+        if logits_list:
+            max_options = max(t.size(-1) for t in logits_list)
+            padded_logits: list[Tensor] = []
+            padded_op_mask: list[Tensor] = []
+            for logits_tensor, mask_tensor in zip(
+                logits_list, op_mask_list, strict=True
+            ):
+                diff = max_options - logits_tensor.size(-1)
+                if diff > 0:
+                    logits_tensor = F.pad(logits_tensor, (0, diff), value=0.0)
+                    mask_tensor = F.pad(mask_tensor, (0, diff), value=False)
+                padded_logits.append(logits_tensor)
+                padded_op_mask.append(mask_tensor)
+
+            all_logits = torch.cat(padded_logits, dim=0)
+            all_op_mask = torch.cat(padded_op_mask, dim=0)
+            all_labels = torch.cat(labels_list, dim=0)
+        else:
+            all_logits = torch.empty(0, 0)
+            all_op_mask = torch.empty(0, 0, dtype=torch.bool)
+            all_labels = torch.empty(0, dtype=torch.long)
 
         if max_samples > 0 and all_logits.size(0) > max_samples:
             all_logits = all_logits[:max_samples]

@@ -332,3 +332,79 @@ def test_collect_logits_signature() -> None:
     assert cache.labels.shape == (2,)
     assert len(cache.question_types) == 2
     assert len(cache.candidate_counts) == 2
+
+
+def test_collect_logits_heterogeneous_options() -> None:
+    """異なる選択肢数を持つバッチ群 (例: Banking77 の 77 択と MNLI の 3 択) がパディング結合されることを検証する。"""
+    from typing import Any
+
+    from torch import nn
+    from torch.utils.data import DataLoader, Dataset
+
+    class DynamicOptionModel(nn.Module):
+        def forward(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor,
+            op_indices: torch.Tensor,
+        ) -> torch.Tensor:
+            batch_size, num_options = op_indices.shape
+            return torch.full((batch_size, num_options), 2.0)
+
+    class MultiBatchDataset(Dataset[dict[str, Any]]):
+        def __len__(self) -> int:
+            return 2
+
+        def __getitem__(self, index: int) -> dict[str, Any]:
+            if index == 0:
+                # 77 択バッチ
+                return {
+                    "input_ids": torch.ones(1, 10, dtype=torch.long),
+                    "attention_mask": torch.ones(1, 10, dtype=torch.long),
+                    "op_indices": torch.zeros(1, 77, dtype=torch.long),
+                    "op_mask": torch.ones(1, 77, dtype=torch.bool),
+                    "labels": torch.tensor([0]),
+                    "question_types": [QuestionType.CHOICE.value],
+                }
+            # 3 択バッチ
+            return {
+                "input_ids": torch.ones(1, 10, dtype=torch.long),
+                "attention_mask": torch.ones(1, 10, dtype=torch.long),
+                "op_indices": torch.zeros(1, 3, dtype=torch.long),
+                "op_mask": torch.ones(1, 3, dtype=torch.bool),
+                "labels": torch.tensor([1]),
+                "question_types": [QuestionType.CHOICE.value],
+            }
+
+    dataloader: DataLoader[dict[str, Any]] = DataLoader(
+        MultiBatchDataset(),
+        batch_size=None,
+    )
+
+    optimizer = TemperatureOptimizer()
+    cache = optimizer.collect_logits(
+        model=DynamicOptionModel(),
+        dataloader=dataloader,
+        device=torch.device("cpu"),
+    )
+
+    # 全体サイズは最大選択肢数 77 にパディングされていることを検証
+    assert cache.logits.shape == (2, 77)
+    assert cache.op_mask.shape == (2, 77)
+    assert cache.labels.shape == (2,)
+
+    # バッチ0 (77 択) は全 77 列が有効
+    assert cache.op_mask[0].sum().item() == 77
+    # バッチ1 (3 択) は最初の 3 列のみ有効、残りは False
+    assert cache.op_mask[1].sum().item() == 3
+    assert cache.op_mask[1, :3].all().item() is True
+    assert (~cache.op_mask[1, 3:]).all().item() is True
+
+    # filter_by_bucket で 3 択バケット ("3-5") を抽出した際、有効最大数に合わせて 3 列にトリムされることを検証
+    sub_logits, sub_labels, sub_mask = cache.filter_by_bucket(
+        target_type=QuestionType.CHOICE,
+        bucket_expr="3-5",
+    )
+    assert sub_logits.shape == (1, 3)
+    assert sub_mask.shape == (1, 3)
+    assert sub_labels.tolist() == [1]
