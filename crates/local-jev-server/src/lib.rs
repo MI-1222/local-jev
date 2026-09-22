@@ -23,12 +23,14 @@ pub use local_jev_core as core;
 pub use local_jev_runtime as runtime;
 
 pub mod error;
+pub mod guardrails;
 pub mod handlers;
 pub mod metrics;
 pub mod openapi;
 pub mod state;
 
 pub use error::{ErrorResponse, ServerError};
+pub use guardrails::{GuardrailConfig, GuardrailPipeline};
 pub use openapi::{export_openapi_json, generate_openapi_spec};
 pub use state::AppState;
 

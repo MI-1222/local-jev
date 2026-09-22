@@ -207,6 +207,10 @@ pub struct SystemOneRequest {
     pub model: Option<String>,
 
     /// 判断の材料となる非構造化コンテキストデータ(文字列、オブジェクト、配列など)。
+    ///
+    /// # 備考
+    /// サーバー側の前処理ガードレールパイプライン通過後は、推論バックボーンへ供給するために
+    /// 常に自然言語文字列 (`Value::String`) として標準化および注釈付加が行われる。
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]
     pub state: serde_json::Value,
 

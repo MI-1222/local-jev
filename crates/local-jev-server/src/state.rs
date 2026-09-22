@@ -8,6 +8,8 @@ use local_jev_core::contract::calibration::CalibrationConfig;
 use local_jev_runtime::engine::{CoarseToFineConfig, InferenceEngine};
 use local_jev_runtime::tokenizer::JevTokenizer;
 
+use crate::guardrails::{GuardrailConfig, GuardrailPipeline};
+
 /// デフォルトのリクエストあたり最大質問数。
 pub const DEFAULT_MAX_QUESTIONS_PER_REQUEST: usize = 128;
 
@@ -29,6 +31,8 @@ pub struct AppState {
     pub max_questions_per_request: usize,
     /// マイクロバッチ分割時のチャンクサイズ。
     pub chunk_size: usize,
+    /// 前処理ガードレールパイプライン。
+    pub guardrail_pipeline: GuardrailPipeline,
 }
 
 impl AppState {
@@ -43,6 +47,10 @@ impl AppState {
         tokenizer: Arc<JevTokenizer>,
         calib_config: Arc<CalibrationConfig>,
     ) -> Self {
+        let mut guardrail_config = GuardrailConfig::default();
+        guardrail_config.limits.max_questions = DEFAULT_MAX_QUESTIONS_PER_REQUEST;
+        let guardrail_pipeline = GuardrailPipeline::new(guardrail_config);
+
         Self {
             engine,
             tokenizer,
@@ -50,6 +58,7 @@ impl AppState {
             coarse_config: CoarseToFineConfig::default(),
             max_questions_per_request: DEFAULT_MAX_QUESTIONS_PER_REQUEST,
             chunk_size: DEFAULT_CHUNK_SIZE,
+            guardrail_pipeline,
         }
     }
 
@@ -62,6 +71,10 @@ impl AppState {
         max_questions_per_request: usize,
         chunk_size: usize,
     ) -> Self {
+        let mut guardrail_config = GuardrailConfig::default();
+        guardrail_config.limits.max_questions = max_questions_per_request;
+        let guardrail_pipeline = GuardrailPipeline::new(guardrail_config);
+
         Self {
             engine,
             tokenizer,
@@ -69,6 +82,28 @@ impl AppState {
             coarse_config,
             max_questions_per_request,
             chunk_size: chunk_size.max(1),
+            guardrail_pipeline,
+        }
+    }
+
+    /// ガードレール設定も含めてフルカスタマイズした `AppState` を構築する。
+    pub fn with_guardrails(
+        engine: Arc<InferenceEngine>,
+        tokenizer: Arc<JevTokenizer>,
+        calib_config: Arc<CalibrationConfig>,
+        coarse_config: CoarseToFineConfig,
+        max_questions_per_request: usize,
+        chunk_size: usize,
+        guardrail_config: GuardrailConfig,
+    ) -> Self {
+        Self {
+            engine,
+            tokenizer,
+            calib_config,
+            coarse_config,
+            max_questions_per_request,
+            chunk_size: chunk_size.max(1),
+            guardrail_pipeline: GuardrailPipeline::new(guardrail_config),
         }
     }
 

@@ -36,20 +36,17 @@ use crate::state::AppState;
 )]
 pub async fn system_one_handler(
     State(state): State<Arc<AppState>>,
-    axum::Json(req): axum::Json<SystemOneRequest>,
+    axum::Json(mut req): axum::Json<SystemOneRequest>,
 ) -> Result<impl IntoResponse, ServerError> {
     let start_time = Instant::now();
 
-    // 1. 高速リクエスト検証 (Fast-Fail)
+    // 1. 高速スキーマ検証
     req.validate()?;
 
+    // 2. 前処理ガードレールパイプラインの実行 (物理OOM防壁、サニタイズ、縮約、相対日時、算術集計)
+    state.guardrail_pipeline.process(&mut req, None)?;
+
     let question_count = req.questions.len();
-    if question_count > state.max_questions_per_request {
-        return Err(ServerError::PayloadTooLarge(format!(
-            "リクエストに含まれる質問数 ({question_count}) が上限値 ({}) を超過しています。",
-            state.max_questions_per_request
-        )));
-    }
 
     // 質問タイプ別メトリクスカウント
     for question in req.questions.values() {
@@ -60,22 +57,23 @@ pub async fn system_one_handler(
         }
     }
 
-    // 2. State の文字列正規化 (文字列型はそのままクローン、それ以外は JSON 文字列化)
+    // 3. 正規化済み State の文字列取得
     let state_text = match &req.state {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     };
 
-    // 3. CPU/GPU バウンドな推論処理をブロッキングプールへオフロード
+    // 4. CPU/GPU バウンドな推論処理をブロッキングプールへオフロード
     let engine = Arc::clone(&state.engine);
     let tokenizer = Arc::clone(&state.tokenizer);
     let calib_config = Arc::clone(&state.calib_config);
     let coarse_config = state.coarse_config.clone();
+    let chunk_size = state.chunk_size;
     let questions = req.questions;
 
     let inference_start = Instant::now();
     let (answers, prompt_tokens) = tokio::task::spawn_blocking(move || {
-        // ユーザー送信ペイロードの正味トークン数を正確に算出 (特殊トークンの重複混入を防止)
+        // 正規化後ペイロードの正味トークン数を正確に算出
         let state_tokens = tokenizer
             .encode_state(&state_text)
             .map(|toks| toks.len())
@@ -100,12 +98,14 @@ pub async fn system_one_handler(
             .sum();
         let total_prompt_tokens = state_tokens + questions_tokens;
 
-        let answers = engine.evaluate_batch_questions_coarse_to_fine(
+        // 粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行
+        let answers = engine.evaluate_batch_questions_coarse_to_fine_chunked(
             &tokenizer,
             &state_text,
             &questions,
             &calib_config,
             &coarse_config,
+            chunk_size,
         )?;
 
         Ok::<_, ServerError>((answers, total_prompt_tokens))

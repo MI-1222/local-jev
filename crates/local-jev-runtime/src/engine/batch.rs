@@ -447,4 +447,159 @@ impl InferenceEngine {
             &scorer,
         )
     }
+
+    /// 任意の類似度スコアラーを指定して、粗密 2 段階探索とマイクロバッチチャンキングを統合した安全推論を実行する。
+    ///
+    /// 候補数が膨大な質問を事前に Top-$M$ 件へスクリーニングした上で、
+    /// 共通 State を 1 度だけエンコードし、質問群を指定されたチャンクサイズごとに順次フォワードパスへ供給する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問マップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `chunk_size`: 1 回のフォワードパスで処理する最大質問数。
+    /// - `scorer`: 類似度スコアラー実装。
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_batch_questions_coarse_to_fine_chunked_with_scorer<S: CoarseScorer>(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        chunk_size: usize,
+        scorer: &S,
+    ) -> Result<IndexMap<String, Answer>> {
+        coarse_config.validate()?;
+
+        if questions.is_empty() {
+            return Ok(IndexMap::new());
+        }
+
+        let effective_chunk_size = chunk_size.max(1);
+
+        // 1. 各質問の前処理と粗スクリーニング (Top-M 抽出)
+        let mut processed_questions = IndexMap::with_capacity(questions.len());
+        let mut original_keys_map: IndexMap<String, Vec<String>> = IndexMap::new();
+
+        for (q_key, question) in questions {
+            let should_trigger = question.question_type == QuestionType::Choice
+                && question
+                    .criteria
+                    .as_ref()
+                    .and_then(|c| c.as_map())
+                    .map(|map| coarse_config.should_trigger(map.len()))
+                    .unwrap_or(false);
+
+            if should_trigger {
+                let map = question
+                    .criteria
+                    .as_ref()
+                    .and_then(|c| c.as_map())
+                    .expect("should_trigger により Map が保証されている。");
+
+                let original_keys: Vec<String> = map.keys().cloned().collect();
+                let query = format!("State: {}\nInstructions: {}", state, question.instructions);
+
+                let filtered = filter_top_candidates(&query, map, coarse_config, scorer)?;
+                let sub_question =
+                    Question::new_choice(question.instructions.clone(), filtered.selected);
+
+                processed_questions.insert(q_key.clone(), sub_question);
+                original_keys_map.insert(q_key.clone(), original_keys);
+            } else {
+                processed_questions.insert(q_key.clone(), question.clone());
+            }
+        }
+
+        // 2. 共通 State を 1 度だけエンコードし全チャンクで再利用
+        let state_ids = tokenizer.encode_state(state)?;
+        let mut answers = IndexMap::with_capacity(questions.len());
+
+        // 3. マイクロバッチ分割逐次推論
+        for chunk_slice in processed_questions
+            .iter()
+            .collect::<Vec<_>>()
+            .chunks(effective_chunk_size)
+        {
+            let mut sub_questions = IndexMap::with_capacity(chunk_slice.len());
+            for (k, v) in chunk_slice {
+                sub_questions.insert((*k).clone(), (*v).clone());
+            }
+
+            let batch = tokenizer.encode_batch_with_pretokenized_state(
+                &state_ids,
+                &sub_questions,
+                tokenizer.max_sequence_length(),
+            )?;
+
+            let total_logits = batch.dims.batch_size * batch.dims.num_options;
+            let mut flat_logits = vec![0.0f64; total_logits];
+            self.forward_batch_tokenized_into(&batch, &mut flat_logits)?;
+
+            let mut probs_buf = vec![0.0f64; batch.dims.num_options];
+            let num_options = batch.dims.num_options;
+
+            for (i, q_key) in batch.question_keys.iter().enumerate() {
+                let k_i = batch.candidate_counts[i];
+                let start_idx = i * num_options;
+                let valid_logits = &flat_logits[start_idx..start_idx + k_i];
+                let question = sub_questions
+                    .get(q_key)
+                    .expect("キーの一致が保証されている。");
+
+                let answer = evaluate_question_with_buf(
+                    question,
+                    valid_logits,
+                    calib_config,
+                    &mut probs_buf[..k_i],
+                )?;
+                answers.insert(q_key.clone(), answer);
+            }
+        }
+
+        // 4. スクリーニングされた質問の確率マップを全候補空間に復元
+        for (q_key, original_keys) in &original_keys_map {
+            if let Some(answer) = answers.get_mut(q_key)
+                && let Some(ref sub_probs) = answer.probabilities
+            {
+                let full_probs = reconstruct_probabilities(original_keys, sub_probs);
+                answer.probabilities = Some(full_probs);
+            }
+        }
+
+        Ok(answers)
+    }
+
+    /// 既定の語彙スコアラー (`LexicalCoarseScorer`) を用いて、粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問マップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `chunk_size`: 1 回のフォワードパスで処理する最大質問数。
+    pub fn evaluate_batch_questions_coarse_to_fine_chunked(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        chunk_size: usize,
+    ) -> Result<IndexMap<String, Answer>> {
+        let scorer = LexicalCoarseScorer::new(tokenizer);
+        self.evaluate_batch_questions_coarse_to_fine_chunked_with_scorer(
+            tokenizer,
+            state,
+            questions,
+            calib_config,
+            coarse_config,
+            chunk_size,
+            &scorer,
+        )
+    }
 }

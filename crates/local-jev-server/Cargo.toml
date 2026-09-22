@@ -21,6 +21,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }
 
 [features]
 default = ["swagger"]
