@@ -12,3 +12,6 @@ __marimo__/
 # models (ONNX および配布バンドル)
 models/*
 !/models/.gitkeep
+
+# distribution
+/dist
