@@ -130,11 +130,21 @@ pub fn softmax(logits: &[f64], temperature: f64) -> Result<Vec<f64>> {
     Ok(probs)
 }
 
-/// シャノンエントロピーに基づき、0.0〜1.0 の正規化確信度(Confidence)を算出する。
+/// 確率分布から候補数 $K$ に非依存な正規化シャノンエントロピー $H_{\text{norm}}(p) \in [0.0, 1.0]$ を算出する。
 ///
-/// 候補数 $K=1$ の場合は完全に確信しているため 1.0 を返す。
-/// 一様分布のとき 0.0、単一の候補に確率が集中しているとき 1.0 となる。
-pub fn normalized_entropy_confidence(probabilities: &[f64]) -> Result<f64> {
+/// # 数理仕様
+/// $$H_{\text{norm}}(p) = \begin{cases} 0.0 & (K = 1) \\ \frac{-\sum_{k=1}^K p_k \ln p_k}{\ln K} & (K \ge 2) \end{cases}$$
+///
+/// - $p_k \le 0.0$ の要素は情報量 $0 \ln 0 = 0$ として対数計算をスキップする。
+/// - $K=1$ の特異点ではゼロ除算を回避し、決定的な $0.0$(不確実性なし)を即座に返却する。
+/// - 戻り値は浮動小数点誤差を考慮して `[0.0, 1.0]` の閉区間にクランプされる。
+///
+/// # 引数
+/// - `probabilities`: 各候補の確率分布スライス(`f64`)。
+///
+/// # 戻り値
+/// - 成功時は `[0.0, 1.0]` にクランプされた正規化エントロピー、不正時は `CoreError::MathError`。
+pub fn normalized_entropy(probabilities: &[f64]) -> Result<f64> {
     let k = probabilities.len();
     if k == 0 {
         return Err(CoreError::MathError {
@@ -142,12 +152,26 @@ pub fn normalized_entropy_confidence(probabilities: &[f64]) -> Result<f64> {
         });
     }
     if k == 1 {
-        return Ok(1.0);
+        if !probabilities[0].is_finite() {
+            return Err(CoreError::MathError {
+                message: "確率値に非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
+        if probabilities[0] < 0.0 {
+            return Err(CoreError::MathError {
+                message: format!("負の確率値が含まれています: {}。", probabilities[0]),
+            });
+        }
+        return Ok(0.0);
     }
 
-    // シャノンエントロピー H(p) = - Σ p_i * ln(p_i)
     let mut entropy = 0.0;
     for &p in probabilities {
+        if !p.is_finite() {
+            return Err(CoreError::MathError {
+                message: "確率値に非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
         if p < 0.0 {
             return Err(CoreError::MathError {
                 message: format!("負の確率値が含まれています: {p}。"),
@@ -159,10 +183,131 @@ pub fn normalized_entropy_confidence(probabilities: &[f64]) -> Result<f64> {
     }
 
     let max_entropy = (k as f64).ln();
-    let confidence = 1.0 - (entropy / max_entropy);
+    if max_entropy <= 0.0 {
+        return Ok(0.0);
+    }
 
-    // 数値誤差を考慮して 0.0〜1.0 にクランプする。
-    Ok(confidence.clamp(0.0, 1.0))
+    let h_norm = entropy / max_entropy;
+    Ok(h_norm.clamp(0.0, 1.0))
+}
+
+/// 確率分布から上位2候補の確率差(Top-Margin) $M(p) \in [0.0, 1.0]$ を算出する。
+///
+/// # 数理仕様
+/// $$M(p) = \begin{cases} 1.0 & (K = 1) \\ p_{(1)} - p_{(2)} & (K \ge 2) \end{cases}$$
+///
+/// - $O(K)$ 単一パス走査により、ヒープメモリ割り当て(アロケーション)ゼロで計算する。
+/// - $K=1$ の特異点では $1.0$(他候補なし・完全なマージン)を即座に返却する。
+/// - 同率1位(タイ)の場合は $M(p) = 0.0$ となる。
+/// - 戻り値は `[0.0, 1.0]` の閉区間にクランプされる。
+///
+/// # 引数
+/// - `probabilities`: 各候補の確率分布スライス(`f64`)。
+///
+/// # 戻り値
+/// - 成功時は `[0.0, 1.0]` にクランプされた Top-Margin、不正時は `CoreError::MathError`。
+pub fn top_margin(probabilities: &[f64]) -> Result<f64> {
+    let k = probabilities.len();
+    if k == 0 {
+        return Err(CoreError::MathError {
+            message: "確率分布配列が空です。".to_string(),
+        });
+    }
+    if k == 1 {
+        if !probabilities[0].is_finite() {
+            return Err(CoreError::MathError {
+                message: "確率値に非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
+        if probabilities[0] < 0.0 {
+            return Err(CoreError::MathError {
+                message: format!("負の確率値が含まれています: {}。", probabilities[0]),
+            });
+        }
+        return Ok(1.0);
+    }
+
+    let mut max1 = f64::NEG_INFINITY;
+    let mut max2 = f64::NEG_INFINITY;
+
+    for &p in probabilities {
+        if !p.is_finite() {
+            return Err(CoreError::MathError {
+                message: "確率値に非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
+        if p < 0.0 {
+            return Err(CoreError::MathError {
+                message: format!("負の確率値が含まれています: {p}。"),
+            });
+        }
+
+        if p > max1 {
+            max2 = max1;
+            max1 = p;
+        } else if p > max2 {
+            max2 = p;
+        }
+    }
+
+    let margin = max1 - max2;
+    Ok(margin.clamp(0.0, 1.0))
+}
+
+/// 確率分布から、正規化エントロピーと Top-Margin を統合した複合確信度スコア $S_{\text{confidence}} \in [0.0, 1.0]$ を算出する。
+///
+/// # 数理仕様
+/// $$S_{\text{confidence}} = (1.0 - H_{\text{norm}}(p)) \times M(p)$$
+///
+/// - 分布全体が鋭利であり(平坦度 $H_{\text{norm}}$ が小)、かつ第1位と第2位の差分(マージン $M(p)$)が明瞭な場合にのみ
+///   高い確信度を出力する。
+/// - $K=1$ の特異点では $1.0$ を返却する。
+/// - 同率タイブレーク時はマージンが $0.0$ となるため、複合確信度も厳密に $0.0$ に収束する。
+/// - 戻り値は `[0.0, 1.0]` の閉区間にクランプされる。
+///
+/// # 引数
+/// - `probabilities`: 各候補の確率分布スライス(`f64`)。
+///
+/// # 戻り値
+/// - 成功時は `[0.0, 1.0]` にクランプされた複合確信度スコア、不正時は `CoreError::MathError`。
+pub fn composite_confidence(probabilities: &[f64]) -> Result<f64> {
+    let k = probabilities.len();
+    if k == 0 {
+        return Err(CoreError::MathError {
+            message: "確率分布配列が空です。".to_string(),
+        });
+    }
+    if k == 1 {
+        if !probabilities[0].is_finite() {
+            return Err(CoreError::MathError {
+                message: "確率値に非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
+        if probabilities[0] < 0.0 {
+            return Err(CoreError::MathError {
+                message: format!("負の確率値が含まれています: {}。", probabilities[0]),
+            });
+        }
+        return Ok(1.0);
+    }
+
+    let h_norm = normalized_entropy(probabilities)?;
+    let margin = top_margin(probabilities)?;
+
+    let score = (1.0 - h_norm) * margin;
+    Ok(score.clamp(0.0, 1.0))
+}
+
+/// シャノンエントロピーに基づき、0.0〜1.0 の正規化確信度(Confidence)を算出する。
+///
+/// 候補数 $K=1$ の場合は完全に確信しているため 1.0 を返す。
+/// 一様分布のとき 0.0、単一の候補に確率が集中しているとき 1.0 となる。
+///
+/// # 備考
+/// 本関数は後方互換性のために維持されており、$1.0 - H_{\text{norm}}(p)$ を返却する。
+pub fn normalized_entropy_confidence(probabilities: &[f64]) -> Result<f64> {
+    let h_norm = normalized_entropy(probabilities)?;
+    Ok((1.0 - h_norm).clamp(0.0, 1.0))
 }
 
 /// スライス内から最大値を持つ要素のインデックスを取得する。
@@ -665,5 +810,113 @@ mod tests {
         assert!(noul_probability(0.0, f64::INFINITY, 1.0).is_err());
         assert!(noul_probability(f64::NEG_INFINITY, 0.0, 1.0).is_err());
         assert!(noul_probability(0.0, f64::NEG_INFINITY, 1.0).is_err());
+    }
+
+    #[test]
+    fn test_normalized_entropy() {
+        // 1. K=1 の特異点: 不確実性ゼロのため 0.0 を返却する。
+        assert_eq!(normalized_entropy(&[1.0]).unwrap(), 0.0);
+
+        // 2. 完全な一様分布: 理論値 H(p) = ln(K) により正規化エントロピーは厳密に 1.0 となる。
+        let uniform2 = vec![0.5, 0.5];
+        assert!((normalized_entropy(&uniform2).unwrap() - 1.0).abs() < 1e-6);
+
+        let uniform4 = vec![0.25, 0.25, 0.25, 0.25];
+        assert!((normalized_entropy(&uniform4).unwrap() - 1.0).abs() < 1e-6);
+
+        // 3. ワンホット(完全確信)分布: H(p) = 0.0 により正規化エントロピーは 0.0 となる。
+        let peaked = vec![1.0, 0.0, 0.0, 0.0];
+        assert!(normalized_entropy(&peaked).unwrap() < 1e-6);
+
+        // 4. 一般分布 (K=3)
+        // p = [0.7, 0.2, 0.1]
+        // H(p) = -(0.7 * ln 0.7 + 0.2 * ln 0.2 + 0.1 * ln 0.1) ≈ 0.80181855
+        // H_norm = 0.80181855 / ln(3) ≈ 0.80181855 / 1.09861229 ≈ 0.7298466
+        let p3 = vec![0.7, 0.2, 0.1];
+        let h_norm3 = normalized_entropy(&p3).unwrap();
+        assert!((h_norm3 - 0.7298466).abs() < 1e-5);
+
+        // 5. 異常系
+        assert!(normalized_entropy(&[]).is_err());
+        assert!(normalized_entropy(&[-0.1, 1.1]).is_err());
+        assert!(normalized_entropy(&[0.5, f64::NAN]).is_err());
+        assert!(normalized_entropy(&[f64::INFINITY, 0.5]).is_err());
+        assert!(normalized_entropy(&[f64::NAN]).is_err());
+    }
+
+    #[test]
+    fn test_top_margin() {
+        // 1. K=1 の特異点: 競合候補が存在しないため 1.0 を返却する。
+        assert_eq!(top_margin(&[1.0]).unwrap(), 1.0);
+
+        // 2. 明確な差がある場合
+        let p_clear = vec![0.7, 0.2, 0.1];
+        assert!((top_margin(&p_clear).unwrap() - 0.5).abs() < 1e-6);
+
+        // 3. 同率1位(タイ)の場合: マージンは 0.0 となる。
+        let p_tied = vec![0.4, 0.4, 0.2];
+        assert!(top_margin(&p_tied).unwrap() < 1e-6);
+
+        let p_all_equal = vec![0.25, 0.25, 0.25, 0.25];
+        assert!(top_margin(&p_all_equal).unwrap() < 1e-6);
+
+        // 4. ワンホット極限: マージンは 1.0 となる。
+        let p_onehot = vec![1.0, 0.0, 0.0];
+        assert!((top_margin(&p_onehot).unwrap() - 1.0).abs() < 1e-6);
+
+        // 5. 最大値が末尾にある場合
+        let p_last = vec![0.1, 0.2, 0.7];
+        assert!((top_margin(&p_last).unwrap() - 0.5).abs() < 1e-6);
+
+        // 6. 異常系
+        assert!(top_margin(&[]).is_err());
+        assert!(top_margin(&[-0.5, 1.5]).is_err());
+        assert!(top_margin(&[0.5, f64::NAN]).is_err());
+        assert!(top_margin(&[f64::INFINITY, 0.0]).is_err());
+        assert!(top_margin(&[f64::NAN]).is_err());
+    }
+
+    #[test]
+    fn test_composite_confidence() {
+        // 1. K=1 の特異点: 完全に決定しているため 1.0 を返却する。
+        assert_eq!(composite_confidence(&[1.0]).unwrap(), 1.0);
+
+        // 2. ワンホット極限: H_norm = 0.0, Margin = 1.0 -> S_conf = 1.0
+        let p_onehot = vec![1.0, 0.0, 0.0];
+        assert!((composite_confidence(&p_onehot).unwrap() - 1.0).abs() < 1e-6);
+
+        // 3. 完全一様分布極限: H_norm = 1.0, Margin = 0.0 -> S_conf = 0.0
+        let p_uniform = vec![0.25, 0.25, 0.25, 0.25];
+        assert!(composite_confidence(&p_uniform).unwrap() < 1e-6);
+
+        // 4. Margin Collapse (上位2候補激突):
+        // p = [0.49, 0.49, 0.02]
+        // 分布全体としてはそこそこ尖っているが、Margin = 0.0 のため S_conf は 0.0 となる。
+        let p_collapse = vec![0.49, 0.49, 0.02];
+        assert!(composite_confidence(&p_collapse).unwrap() < 1e-6);
+
+        // 5. 高確信判定ケース:
+        // p = [0.85, 0.10, 0.05]
+        // H(p) = -(0.85*ln 0.85 + 0.1*ln 0.1 + 0.05*ln 0.05) ≈ 0.518
+        // H_norm = 0.518 / ln(3) ≈ 0.518 / 1.0986 ≈ 0.4715
+        // Margin = 0.85 - 0.10 = 0.75
+        // S_conf = (1.0 - 0.4715) * 0.75 ≈ 0.396
+        let p_high = vec![0.85, 0.10, 0.05];
+        let s_conf = composite_confidence(&p_high).unwrap();
+        assert!(s_conf > 0.35 && s_conf < 0.45);
+
+        // 6. 圧倒的確信ケース:
+        // p = [0.98, 0.01, 0.01]
+        // Margin = 0.97
+        // 1 - H_norm ≈ 0.89
+        // S_conf ≈ 0.86
+        let p_extreme = vec![0.98, 0.01, 0.01];
+        let s_extreme = composite_confidence(&p_extreme).unwrap();
+        assert!(s_extreme > 0.80);
+
+        // 7. 異常系
+        assert!(composite_confidence(&[]).is_err());
+        assert!(composite_confidence(&[-0.1, 1.1]).is_err());
+        assert!(composite_confidence(&[0.5, f64::NAN]).is_err());
     }
 }

@@ -233,3 +233,92 @@ fn test_criteria_untagged_schema_compatibility() {
     let json_none = serde_json::to_value(&c_none).unwrap();
     assert!(json_none.is_null());
 }
+
+#[test]
+fn test_gating_metadata_schema_and_serialization_parity() {
+    let spec = generate_openapi_spec();
+    let spec_json = serde_json::to_value(&spec).expect("JSON シリアライズに成功すること。");
+
+    let meta_schema = &spec_json["components"]["schemas"]["GatingMetadata"];
+    let properties = &meta_schema["properties"];
+
+    // 必須および新設プロパティの存在確認
+    assert!(properties.get("route").is_some());
+    assert!(properties.get("confidence").is_some());
+    assert!(properties.get("entropy").is_some());
+    assert!(properties.get("margin").is_some());
+    assert!(properties.get("reason").is_some());
+    assert!(properties.get("escalation").is_some());
+
+    use local_jev_core::gating::{
+        CandidateProbability, DecisionRoute, EscalationContext, GatingMetadata,
+    };
+
+    let meta = GatingMetadata {
+        route: DecisionRoute::ConfirmOrEscalate,
+        confidence: 0.65,
+        entropy: Some(0.25),
+        margin: Some(0.10),
+        reason: "テスト降格理由".to_string(),
+        escalation: Some(EscalationContext {
+            top_candidates: vec![
+                CandidateProbability {
+                    candidate: "opt_a".to_string(),
+                    probability: 0.55,
+                },
+                CandidateProbability {
+                    candidate: "opt_b".to_string(),
+                    probability: 0.45,
+                },
+            ],
+            margin: Some(0.10),
+            uncertainty_reason: "僅差競合".to_string(),
+            prompt_template: Some("<context>文脈</context>".to_string()),
+        }),
+    };
+
+    let json_val = serde_json::to_value(&meta).unwrap();
+    assert_eq!(json_val["route"], "confirm_or_escalate");
+    assert_eq!(json_val["confidence"], 0.65);
+    assert_eq!(json_val["entropy"], 0.25);
+    assert_eq!(json_val["margin"], 0.10);
+    assert_eq!(json_val["reason"], "テスト降格理由");
+
+    let esc_val = &json_val["escalation"];
+    assert!(esc_val.is_object());
+    assert_eq!(esc_val["margin"], 0.10);
+    assert_eq!(esc_val["top_candidates"][0]["candidate"], "opt_a");
+    assert_eq!(esc_val["top_candidates"][0]["probability"], 0.55);
+}
+
+#[test]
+fn test_system_routing_summary_schema_parity() {
+    let spec = generate_openapi_spec();
+    let spec_json = serde_json::to_value(&spec).expect("JSON シリアライズに成功すること。");
+
+    let summary_schema = &spec_json["components"]["schemas"]["SystemRoutingSummary"];
+    let properties = &summary_schema["properties"];
+
+    assert!(properties.get("aggregate_route").is_some());
+    assert!(properties.get("auto_execute_count").is_some());
+    assert!(properties.get("confirm_count").is_some());
+    assert!(properties.get("fallback_count").is_some());
+    assert!(properties.get("escalation_needed").is_some());
+
+    use local_jev_core::gating::{DecisionRoute, SystemRoutingSummary};
+
+    let summary = SystemRoutingSummary {
+        aggregate_route: DecisionRoute::Fallback,
+        auto_execute_count: 2,
+        confirm_count: 1,
+        fallback_count: 1,
+        escalation_needed: true,
+    };
+
+    let json_val = serde_json::to_value(&summary).unwrap();
+    assert_eq!(json_val["aggregate_route"], "fallback");
+    assert_eq!(json_val["auto_execute_count"], 2);
+    assert_eq!(json_val["confirm_count"], 1);
+    assert_eq!(json_val["fallback_count"], 1);
+    assert_eq!(json_val["escalation_needed"], true);
+}

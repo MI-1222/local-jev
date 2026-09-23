@@ -289,3 +289,85 @@ class CalibrationEvaluator:
             "accuracy": round(accuracy, 4),
             "reliability_diagram": diagram,
         }
+
+
+def compute_batch_normalized_entropy(probs: Tensor, op_mask: Tensor) -> Tensor:
+    """バッチテンソルに対する正規化シャノンエントロピー H_norm [N] を算出する。
+
+    数理仕様:
+    $$H_{\\text{norm}}(p) = \\begin{cases} 0.0 & (K_i = 1) \\\\ \\frac{-\\sum_{k \\in \\text{valid}} p_{ik} \\ln p_{ik}}{\\ln K_i} & (K_i \\ge 2) \\end{cases}$$
+
+    Args:
+        probs (Tensor): 正規化済み確率分布テンソル `[N, K]`。
+        op_mask (Tensor): 有効候補マスクテンソル `[N, K]`。
+
+    Returns:
+        Tensor: [0.0, 1.0] にクランプされた正規化エントロピーテンソル `[N]`。
+    """
+    valid_counts = op_mask.sum(dim=-1).float()
+    masked_probs = probs * op_mask.float()
+
+    # p * ln(p) の計算 (p <= 0 は 0 に置換)
+    safe_p = torch.clamp(masked_probs, min=1e-12)
+    p_log_p = torch.where(masked_probs > 0.0, masked_probs * torch.log(safe_p), 0.0)
+    entropy = -p_log_p.sum(dim=-1)
+
+    max_entropy = torch.log(torch.clamp(valid_counts, min=1.0))
+    # valid_counts <= 1 の場合は 0.0
+    h_norm = torch.where(
+        valid_counts > 1.0,
+        entropy / torch.clamp(max_entropy, min=1e-12),
+        torch.zeros_like(entropy),
+    )
+    return h_norm.clamp(0.0, 1.0)
+
+
+def compute_batch_top_margin(probs: Tensor, op_mask: Tensor) -> Tensor:
+    """バッチテンソルに対する Top-Margin M(p) [N] を算出する。
+
+    数理仕様:
+    $$M(p) = \\begin{cases} 1.0 & (K_i = 1) \\\\ p_{i,(1)} - p_{i,(2)} & (K_i \\ge 2) \\end{cases}$$
+
+    Args:
+        probs (Tensor): 正規化済み確率分布テンソル `[N, K]`。
+        op_mask (Tensor): 有効候補マスクテンソル `[N, K]`。
+
+    Returns:
+        Tensor: [0.0, 1.0] にクランプされた Top-Margin テンソル `[N]`。
+    """
+    valid_counts = op_mask.sum(dim=-1)
+    k_dim = probs.size(-1)
+
+    if k_dim == 1:
+        return torch.ones(probs.size(0), device=probs.device, dtype=probs.dtype)
+
+    masked_probs = probs.masked_fill(~op_mask, -1e9)
+    top2_values, _ = torch.topk(masked_probs, k=min(2, k_dim), dim=-1)
+
+    diff = top2_values[:, 0] - top2_values[:, 1]
+    # valid_counts == 1 の場合は 1.0
+    margin = torch.where(
+        valid_counts <= 1,
+        torch.ones_like(diff),
+        diff,
+    )
+    return margin.clamp(0.0, 1.0)
+
+
+def compute_batch_composite_confidence(probs: Tensor, op_mask: Tensor) -> Tensor:
+    """バッチテンソルに対する複合確信度スコア S_confidence [N] を算出する。
+
+    数理仕様:
+    $$S_{\\text{confidence}}(p) = (1.0 - H_{\\text{norm}}(p)) \\times M(p)$$
+
+    Args:
+        probs (Tensor): 正規化済み確率分布テンソル `[N, K]`。
+        op_mask (Tensor): 有効候補マスクテンソル `[N, K]`。
+
+    Returns:
+        Tensor: [0.0, 1.0] にクランプされた複合確信度スコアテンソル `[N]`。
+    """
+    h_norm = compute_batch_normalized_entropy(probs, op_mask)
+    margin = compute_batch_top_margin(probs, op_mask)
+    score = (1.0 - h_norm) * margin
+    return score.clamp(0.0, 1.0)
