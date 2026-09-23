@@ -42,6 +42,25 @@ class SyntheticDatasetConverter(BaseDatasetConverter):
         self.file_path = Path(file_path)
         self.mode = mode
 
+    def _resolve_file_path(self) -> Path | None:
+        """カレントディレクトリの差異を吸収して有効なファイルパスを探索・解決する。
+
+        Returns:
+            Path | None: 発見されたファイルパス。見つからない場合は None。
+        """
+        candidates = [
+            self.file_path,
+            Path("train") / self.file_path,
+        ]
+        path_str = str(self.file_path)
+        if path_str.startswith("train/"):
+            candidates.append(Path(path_str[len("train/") :]))
+
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
+
     def convert_split(self, split: str = "train") -> Iterator[UnifiedSample]:
         """JSONL ファイルを走査し、UnifiedSample を順次生成する。
 
@@ -54,14 +73,15 @@ class SyntheticDatasetConverter(BaseDatasetConverter):
         Yields:
             Iterator[UnifiedSample]: 統一サンプルインスタンス。
         """
-        if not self.file_path.exists():
+        resolved_path = self._resolve_file_path()
+        if resolved_path is None:
             logger.warning(
                 "合成データファイルが存在しません: %s。スキップします。",
                 self.file_path,
             )
             return
 
-        with open(self.file_path, encoding="utf-8") as f:
+        with open(resolved_path, encoding="utf-8") as f:
             for line_idx, line in enumerate(f):
                 line = line.strip()
                 if not line:

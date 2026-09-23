@@ -40,7 +40,8 @@ class SFTConfig:
         mixed_precision (str): 混合精度モード ('no', 'fp16', 'bf16')。
         max_grad_norm (float): 勾配クリッピングの最大ノルム。
         early_stopping_patience (int | None): 早期終了の許容エポック数。None の場合は早期終了なし。
-        eval_metric (str): 最良チェックポイントおよび早期終了の判定に使用するメトリクス名。
+        eval_metric (str): 最良チェックポイントおよび早期終了の判定に使用するメトリクス名 ('composite_metric', 'choice_accuracy', 'accuracy', 'loss' 等)。
+        evaluate_position_bias (bool): 検証フェーズで Choice 型の選択肢順序シャッフル不変性 (位置バイアス) を自動評価するかどうか。
         seed (int): 乱数シード。
         output_dir (str): 成果物およびログのベース出力ディレクトリ。
         label_smoothing (float): Choice 型のラベル平滑化係数。
@@ -80,7 +81,8 @@ class SFTConfig:
     mixed_precision: str = "no"
     max_grad_norm: float = 1.0
     early_stopping_patience: int | None = 3
-    eval_metric: str = "choice_accuracy"
+    eval_metric: str = "composite_metric"
+    evaluate_position_bias: bool = True
 
     # JevMultiTaskLoss 関連ハイパーパラメータ
     label_smoothing: float = 0.05

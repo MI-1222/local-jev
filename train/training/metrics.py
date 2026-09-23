@@ -218,4 +218,24 @@ class MetricsTracker:
         result["negative_f1"] = round(f1, 4)
         result["negative_total"] = neg_total
 
+        # 複合評価指標 (Composite Score: Choice 50%, Score 25%, Noul 25%)
+        # タスクが存在しない場合は全体精度 (または MAE=0.0) をフォールバックとして使用する。
+        choice_acc = (
+            result[f"{QuestionType.CHOICE.value}_accuracy"]
+            if result.get(f"{QuestionType.CHOICE.value}_total", 0) > 0
+            else accuracy
+        )
+        score_component = (
+            max(0.0, 1.0 - min(result["score_mae"], 1.0))
+            if "score_mae" in result
+            else accuracy
+        )
+        noul_acc = (
+            result[f"{QuestionType.NOUL.value}_accuracy"]
+            if result.get(f"{QuestionType.NOUL.value}_total", 0) > 0
+            else accuracy
+        )
+        composite_score = 0.50 * choice_acc + 0.25 * score_component + 0.25 * noul_acc
+        result["composite_metric"] = round(composite_score, 4)
+
         return result
