@@ -13,7 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from transformers import PreTrainedTokenizerFast
 
-from data.schema import QuestionType
+from data.schema import QuestionType, UnifiedSample
 from models.decision_head import JevDecisionModel
 from training.config import SFTConfig
 from training.loss import MaskedCrossEntropyLoss
@@ -375,3 +375,173 @@ def test_run_sft_cli_argument_parsing(tmp_path: Path) -> None:
     assert custom_config.num_epochs == 10
     assert custom_config.batch_size == 32
     assert custom_config.output_dir == str(tmp_path / "custom_run")
+
+
+def test_composite_metric_calculation() -> None:
+    """MetricsTracker における複合評価指標 (composite_metric) 算出の検証。"""
+    tracker = MetricsTracker()
+
+    # Choice, Score, Noul の3サンプルを投入
+    # sample 0: Choice 正解 (acc=1.0)
+    # sample 1: Score 誤差 0.5 (mae=0.5 -> score_component = 1.0 - 0.5 = 0.5)
+    # sample 2: Noul 正解 (acc=1.0)
+    logits = torch.tensor(
+        [
+            [2.0, 0.0],
+            [0.0, 2.0],
+            [2.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    labels = torch.tensor([0, 1, 0], dtype=torch.long)
+    op_mask = torch.tensor([[True, True], [True, True], [True, True]], dtype=torch.bool)
+    question_types = [
+        QuestionType.CHOICE.value,
+        QuestionType.SCORE.value,
+        QuestionType.NOUL.value,
+    ]
+
+    tracker.update(
+        loss=0.3,
+        logits=logits,
+        labels=labels,
+        op_mask=op_mask,
+        question_types=question_types,
+    )
+
+    metrics = tracker.compute()
+    assert "composite_metric" in metrics
+    # composite_score = 0.50 * 1.0 + 0.25 * (1.0 - 0.5) + 0.25 * 1.0
+    # 期待値: 0.50 + 0.125 + 0.25 = 0.875 -> 0.875
+    expected_composite = (
+        0.50 * 1.0 + 0.25 * (1.0 - min(metrics["score_mae"], 1.0)) + 0.25 * 1.0
+    )
+    assert metrics["composite_metric"] == pytest.approx(
+        round(expected_composite, 4), abs=1e-3
+    )
+
+
+def test_optimizer_parameter_assertion() -> None:
+    """get_optimizer_grouped_parameters で全可変パラメータが分類されることの検証。"""
+
+    class DummyModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.backbone_layer = nn.Linear(4, 4)
+            self.embeddings = nn.Embedding(10, 4)
+            self.decision_head = nn.Linear(4, 1)
+
+    model = DummyModel()
+    groups = get_optimizer_grouped_parameters(
+        model=cast(JevDecisionModel, model),
+        lr_backbone=1e-5,
+        lr_embed=3e-5,
+        lr_head=1e-4,
+        weight_decay=0.01,
+    )
+    total_grouped = sum(len(g["params"]) for g in groups)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    assert total_grouped == len(trainable_params)
+
+
+def test_evaluate_position_bias(tmp_path: Path) -> None:
+    """SFTTrainer.evaluate_position_bias による選択肢順序シャッフル不変性の検証。"""
+    config = SFTConfig(
+        output_dir=str(tmp_path / "runs"),
+        evaluate_position_bias=True,
+    )
+
+    class DummyModelWithForward(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.dummy_param = nn.Parameter(torch.zeros(1))
+
+        def forward(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor,
+            op_indices: torch.Tensor,
+        ) -> torch.Tensor:
+            # 常に第1候補(インデックス0)に高いロジットを出力するモデル (強い位置バイアスを持つ)
+            batch_size, num_options = op_indices.shape
+            logits = torch.zeros((batch_size, num_options))
+            logits[:, 0] = 5.0
+            return logits
+
+    from models.backbone import (
+        DEFAULT_MODERNBERT_MODEL_ID,
+        prepare_backbone_and_tokenizer,
+    )
+
+    _, tokenizer, op_token_id = prepare_backbone_and_tokenizer(
+        DEFAULT_MODERNBERT_MODEL_ID
+    )
+
+    trainer = SFTTrainer(
+        config=config,
+        model=cast(JevDecisionModel, DummyModelWithForward()),
+        tokenizer=tokenizer,
+        op_token_id=op_token_id,
+    )
+
+    sample = UnifiedSample(
+        sample_id="choice_01",
+        dataset_name="test_dataset",
+        question_type=QuestionType.CHOICE,
+        state="ユーザーの問い合わせです。",
+        instructions="カテゴリを選択してください。",
+        criteria={"hw": "ハードウェア障害", "sw": "ソフトウェア障害"},
+        target="hw",
+    )
+
+    bias_result = trainer.evaluate_position_bias(
+        model=trainer.model,
+        val_samples=[sample],
+        threshold=0.03,
+    )
+
+    assert "position_bias_max_delta" in bias_result
+    assert "position_bias_mean_delta" in bias_result
+    assert "position_bias_pass_rate" in bias_result
+    assert bias_result["position_bias_evaluated_samples"] == 1
+
+
+def test_save_checkpoint_includes_backbone_config(tmp_path: Path) -> None:
+    """save_checkpoint がバックボーンの Hugging Face 設定を保存することの検証。"""
+    config = SFTConfig(
+        output_dir=str(tmp_path / "runs"),
+    )
+
+    class MockConfig:
+        hidden_size: int = 4
+
+        def save_pretrained(self, save_dir: Path | str) -> None:
+            p = Path(save_dir)
+            p.mkdir(parents=True, exist_ok=True)
+            (p / "config.json").write_text(
+                '{"model_type": "modernbert"}', encoding="utf-8"
+            )
+
+    class MockBackboneWithConfig(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = MockConfig()
+            self.linear = nn.Linear(4, 4)
+
+    dummy_model = JevDecisionModel(
+        backbone=cast(Any, MockBackboneWithConfig()),
+        mlp_hidden_size=4,
+    )
+    dummy_tokenizer = DummyTokenizer()
+
+    trainer = SFTTrainer(
+        config=config,
+        model=dummy_model,
+        tokenizer=cast(PreTrainedTokenizerFast, dummy_tokenizer),
+        op_token_id=99,
+    )
+
+    ckpt_dir = trainer.save_checkpoint(dummy_model, {"loss": 0.5}, is_best=True)
+    assert (ckpt_dir / "config.json").exists()
+    assert (ckpt_dir / "model.pt").exists()
+    assert (ckpt_dir / "tokenizer" / "tokenizer.json").exists()

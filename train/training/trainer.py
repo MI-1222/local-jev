@@ -7,6 +7,7 @@ Hugging Face Accelerate を用いて、可変長・可変候補数の指示デ�
 
 import json
 import logging
+import os
 import platform
 import random
 import subprocess
@@ -15,8 +16,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# マルチワーカー実行時の Hugging Face Tokenizers デッドロックを防止
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import numpy as np
 import torch
+import torch.nn.functional as F
 from accelerate import Accelerator
 from torch import Tensor, nn
 from torch.optim import AdamW
@@ -28,10 +33,12 @@ from transformers import (
 
 from data.builders import UnifiedDatasetBuilder
 from data.dataset import JevDataset, pad_jev_collate_fn
+from data.formatter import format_prompt, tokenize_sample
+from data.schema import QuestionType, UnifiedSample
 from models.backbone import prepare_backbone_and_tokenizer, save_tokenizer_for_runtime
 from models.decision_head import JevDecisionModel
 from training.config import SFTConfig
-from training.loss import MaskedCrossEntropyLoss
+from training.loss import JevMultiTaskLoss
 from training.metrics import MetricsTracker
 
 logger = logging.getLogger(__name__)
@@ -247,6 +254,14 @@ def get_optimizer_grouped_parameters(
     if head_no_decay:
         groups.append({"params": head_no_decay, "lr": lr_head, "weight_decay": 0.0})
 
+    # パラメータグループの分類漏れを厳格にアサーション検証
+    total_grouped_params = sum(len(g["params"]) for g in groups)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    assert total_grouped_params == len(trainable_params), (
+        f"オプティマイザのパラメータグループ分類漏れが発生しました: "
+        f"grouped={total_grouped_params}, total_trainable={len(trainable_params)}。"
+    )
+
     return groups
 
 
@@ -310,11 +325,22 @@ class SFTTrainer:
             self.tokenizer = tokenizer
             self.op_token_id = op_token_id
 
-        self.loss_fn = MaskedCrossEntropyLoss()
+        self.loss_fn: nn.Module = JevMultiTaskLoss(
+            label_smoothing=config.label_smoothing,
+            focal_gamma=config.focal_gamma,
+            score_loss_power=config.score_loss_power,
+            noul_pos_weight=config.noul_pos_weight,
+            contrastive_weight=config.contrastive_weight,
+            contrastive_temperature=config.contrastive_temperature,
+            choice_weight=config.choice_weight,
+            score_weight=config.score_weight,
+            noul_weight=config.noul_weight,
+        )
         self.metrics_tracker = MetricsTracker()
 
         self.best_metric = -1.0
         self.metrics_history: list[dict[str, Any]] = []
+        self.val_samples: list[UnifiedSample] = []
 
     def prepare_data(
         self,
@@ -349,6 +375,7 @@ class SFTTrainer:
                 max_samples_per_dataset=self.config.max_samples_per_dataset,
             )
         )
+        self.val_samples = val_samples
 
         pad_id = (
             self.tokenizer.pad_token_id
@@ -440,16 +467,38 @@ class SFTTrainer:
             labels = batch["labels"].to(device)
 
             with self.accelerator.accumulate(model):
-                logits = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    op_indices=op_indices,
-                )
-                loss = self.loss_fn(
-                    logits=logits,
-                    labels=labels,
-                    op_mask=op_mask,
-                )
+                if self.config.contrastive_weight > 0.0:
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        op_indices=op_indices,
+                        return_features=True,
+                    )
+                    logits, state_repr, option_vectors = outputs  # type: ignore[misc]
+                else:
+                    logits = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        op_indices=op_indices,
+                    )
+                    state_repr = None
+                    option_vectors = None
+
+                if isinstance(self.loss_fn, JevMultiTaskLoss):
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                        question_types=batch.get("question_types"),
+                        state_repr=state_repr,
+                        option_repr=option_vectors,
+                    )
+                else:
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                    )
 
                 self.accelerator.backward(loss)
 
@@ -520,11 +569,19 @@ class SFTTrainer:
                     attention_mask=attention_mask,
                     op_indices=op_indices,
                 )
-                loss = self.loss_fn(
-                    logits=logits,
-                    labels=labels,
-                    op_mask=op_mask,
-                )
+                if isinstance(self.loss_fn, JevMultiTaskLoss):
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                        question_types=batch.get("question_types"),
+                    )
+                else:
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                    )
 
                 loss_val = float(loss.item())
                 self.metrics_tracker.update(
@@ -536,7 +593,126 @@ class SFTTrainer:
                     is_negatives=batch["is_negatives"],
                 )
 
-        return self.metrics_tracker.compute()
+        metrics = self.metrics_tracker.compute()
+
+        # 位置バイアス検証の実行 (Choice 型の順序不変性評価)
+        if self.config.evaluate_position_bias and self.val_samples:
+            bias_metrics = self.evaluate_position_bias(model=model)
+            metrics.update(bias_metrics)
+
+        return metrics
+
+    @torch.no_grad()
+    def evaluate_position_bias(
+        self,
+        model: nn.Module,
+        val_samples: list[UnifiedSample] | None = None,
+        max_samples: int = 200,
+        threshold: float = 0.03,
+    ) -> dict[str, Any]:
+        """Choice 型候補の選択肢順序シャッフルに対する予測確率の不変性 (位置バイアス) を評価する。
+
+        内部ロジック:
+        1. Choice 型の検証サンプルを抽出する。
+        2. 元の選択肢順序でモデルに入力し、各候補の Softmax 確率 p_orig を算出する。
+        3. 選択肢を逆順に並び替えた入力を作成し、Softmax 確率 p_permuted を算出する。
+        4. 各選択肢について、元の順序と置換後の順序の間で予測確率の絶対差分 |p_orig[k] - p_permuted[k]| を計測する。
+        5. 最大乖離幅 (max_delta)、平均乖離幅 (mean_delta)、および閾値 (デフォルト: 0.03) 以内に収まった割合 (pass_rate) を集計する。
+
+        Args:
+            model (nn.Module): 評価対象モデル。
+            val_samples (list[UnifiedSample] | None): 検証サンプルリスト。未指定時は self.val_samples。
+            max_samples (int): 評価に使用する最大サンプル数。
+            threshold (float): 位置バイアス許容変動閾値 (Phase 2 Exit Criteria: 0.03)。
+
+        Returns:
+            dict[str, Any]: 位置バイアス評価指標辞書。
+        """
+        samples = val_samples if val_samples is not None else self.val_samples
+        choice_samples = [
+            s
+            for s in samples
+            if s.question_type == QuestionType.CHOICE and len(s.criteria) >= 2
+        ][:max_samples]
+
+        if not choice_samples:
+            return {
+                "position_bias_max_delta": 0.0,
+                "position_bias_mean_delta": 0.0,
+                "position_bias_pass_rate": 1.0,
+                "position_bias_evaluated_samples": 0,
+            }
+
+        device = next(model.parameters()).device
+        model.eval()
+
+        deltas: list[float] = []
+        max_sample_deltas: list[float] = []
+
+        for sample_idx, sample in enumerate(choice_samples):
+            num_options = len(sample.criteria)
+            # 1. 元の順序での推論
+            _, orig_keys = format_prompt(sample, shuffle_options=False)
+            orig_tokenized = tokenize_sample(
+                sample=sample,
+                tokenizer=self.tokenizer,
+                op_token_id=self.op_token_id,
+                max_length=self.config.max_sequence_length,
+                shuffle_options=False,
+            )
+            input_ids_orig = orig_tokenized["input_ids"].unsqueeze(0).to(device)
+            attention_mask_orig = (
+                orig_tokenized["attention_mask"].unsqueeze(0).to(device)
+            )
+            op_indices_orig = orig_tokenized["op_indices"].unsqueeze(0).to(device)
+
+            logits_orig = model(input_ids_orig, attention_mask_orig, op_indices_orig)
+            probs_orig = F.softmax(logits_orig[0, :num_options], dim=-1)
+
+            # 2. 選択肢をシャッフルした順序での推論
+            perm_seed = self.config.seed + sample_idx + 1000
+            _, perm_keys = format_prompt(sample, shuffle_options=True, seed=perm_seed)
+            perm_tokenized = tokenize_sample(
+                sample=sample,
+                tokenizer=self.tokenizer,
+                op_token_id=self.op_token_id,
+                max_length=self.config.max_sequence_length,
+                shuffle_options=True,
+                seed=perm_seed,
+            )
+            input_ids_perm = perm_tokenized["input_ids"].unsqueeze(0).to(device)
+            attention_mask_perm = (
+                perm_tokenized["attention_mask"].unsqueeze(0).to(device)
+            )
+            op_indices_perm = perm_tokenized["op_indices"].unsqueeze(0).to(device)
+
+            logits_perm = model(input_ids_perm, attention_mask_perm, op_indices_perm)
+            probs_perm = F.softmax(logits_perm[0, :num_options], dim=-1)
+
+            # 3. 同一候補キーごとに確率差分を計測
+            sample_diffs: list[float] = []
+            for key in sample.criteria:
+                orig_pos = orig_keys.index(key)
+                perm_pos = perm_keys.index(key)
+                p_orig = float(probs_orig[orig_pos].item())
+                p_perm = float(probs_perm[perm_pos].item())
+                diff = abs(p_orig - p_perm)
+                deltas.append(diff)
+                sample_diffs.append(diff)
+
+            max_sample_deltas.append(max(sample_diffs) if sample_diffs else 0.0)
+
+        mean_delta = float(np.mean(deltas)) if deltas else 0.0
+        max_delta = float(np.max(max_sample_deltas)) if max_sample_deltas else 0.0
+        passed_samples = sum(1 for d in max_sample_deltas if d <= threshold)
+        pass_rate = passed_samples / len(choice_samples) if choice_samples else 1.0
+
+        return {
+            "position_bias_max_delta": round(max_delta, 4),
+            "position_bias_mean_delta": round(mean_delta, 4),
+            "position_bias_pass_rate": round(pass_rate, 4),
+            "position_bias_evaluated_samples": len(choice_samples),
+        }
 
     def save_checkpoint(
         self,
@@ -564,6 +740,14 @@ class SFTTrainer:
 
         # Rust 推論ランタイム用の tokenizer.json 一式を保存
         save_tokenizer_for_runtime(self.tokenizer, checkpoint_dir / "tokenizer")
+
+        # バックボーン設定の保存 (Hugging Face AutoConfig 互換性の担保)
+        if (
+            hasattr(unwrapped, "backbone")
+            and hasattr(unwrapped.backbone, "config")
+            and hasattr(unwrapped.backbone.config, "save_pretrained")
+        ):
+            unwrapped.backbone.config.save_pretrained(checkpoint_dir)
 
         # 再現性のための設定ファイルもチェックポイント内に同期保存 (完全性保証)
         self.config.save_yaml(checkpoint_dir / "config.yaml")

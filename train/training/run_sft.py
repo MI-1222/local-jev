@@ -6,9 +6,13 @@ Jev アーキテクチャの SFT 学習ループを実行して再現性のあ�
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
+
+# マルチワーカー実行時の Hugging Face Tokenizers デッドロックを防止
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 from training.config import SFTConfig
 from training.trainer import SFTTrainer
@@ -138,6 +142,12 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="早期終了および最良判定に使用する評価メトリクス名。",
     )
+    parser.add_argument(
+        "--evaluate-position-bias",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Choice 型選択肢順序シャッフル不変性 (位置バイアス) を評価するかどうか。",
+    )
 
     return parser.parse_args(args)
 
@@ -197,6 +207,8 @@ def build_config_from_args(parsed_args: argparse.Namespace) -> SFTConfig:
         config.early_stopping_patience = parsed_args.early_stopping_patience
     if parsed_args.eval_metric is not None:
         config.eval_metric = parsed_args.eval_metric
+    if parsed_args.evaluate_position_bias is not None:
+        config.evaluate_position_bias = parsed_args.evaluate_position_bias
 
     return config
 

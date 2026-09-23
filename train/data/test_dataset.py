@@ -277,3 +277,86 @@ def test_jev_collate_fn_padding(modernbert_tokenizer_and_op) -> None:
     batch_loaded = next(iter(loader))
     assert batch_loaded["input_ids"].shape == collated["input_ids"].shape
     assert batch_loaded["labels"].tolist() == collated["labels"].tolist()
+
+
+def test_jev_dataset_choice_epoch_target_tracking(modernbert_tokenizer_and_op) -> None:
+    """エポック連動シャッフル下で正解ラベルが常に正しい候補を指していることを検証する。"""
+    tokenizer, op_token_id = modernbert_tokenizer_and_op
+
+    sample = UnifiedSample(
+        dataset_name="banking77",
+        sample_id="b_verify_target",
+        question_type=QuestionType.CHOICE,
+        state="I want to query exchange rates.",
+        instructions="分類せよ。",
+        criteria={
+            "c0": "Card lost",
+            "c1": "Exchange rate inquiry",
+            "c2": "PIN reset",
+            "c3": "Account opening",
+        },
+        target="c1",
+    )
+
+    dataset = JevDataset(
+        samples=[sample],
+        tokenizer=tokenizer,
+        op_token_id=op_token_id,
+        is_train=True,
+        base_seed=100,
+    )
+
+    from data.formatter import format_prompt
+
+    for ep in range(15):
+        dataset.set_epoch(ep)
+        item = dataset[0]
+
+        # データセット内部と同一のシード計算式で候補順序を取得
+        seed = (100 + ep * 1_000_003 + 0) & 0xFFFFFFFF
+        _, option_keys = format_prompt(sample, shuffle_options=True, seed=seed)
+
+        label_idx = int(item["label"].item())
+        # label_idx の位置にある候補キーが元の sample.target ("c1") と一致すること
+        assert option_keys[label_idx] == sample.target
+
+
+def test_jev_dataset_dataloader_multi_worker(modernbert_tokenizer_and_op) -> None:
+    """マルチワーカー (num_workers=2) 環境で DataLoader が安全に稼働することを検証する。"""
+    tokenizer, op_token_id = modernbert_tokenizer_and_op
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+
+    samples = [
+        UnifiedSample(
+            dataset_name="dummy",
+            sample_id=f"mw_{i}",
+            question_type=QuestionType.CHOICE,
+            state=f"Context {i}",
+            instructions="指示",
+            criteria={"o0": "Option 0", "o1": "Option 1"},
+            target="o0",
+        )
+        for i in range(8)
+    ]
+
+    dataset = JevDataset(
+        samples=samples,
+        tokenizer=tokenizer,
+        op_token_id=op_token_id,
+        is_train=True,
+    )
+
+    from functools import partial
+
+    loader = DataLoader(
+        dataset,
+        batch_size=4,
+        shuffle=False,
+        num_workers=2,
+        collate_fn=partial(jev_collate_fn, pad_token_id=pad_id),
+    )
+
+    batches = list(loader)
+    assert len(batches) == 2
+    assert batches[0]["input_ids"].shape[0] == 4
+    assert batches[1]["input_ids"].shape[0] == 4

@@ -14,6 +14,7 @@ from data.converters.jglue_jsts import JGlueJSTSConverter
 from data.converters.jglue_marc_ja import JGlueMarcJaConverter
 from data.converters.mnli import MNLIConverter
 from data.converters.sst5 import SST5Converter
+from data.converters.synthetic import SyntheticDatasetConverter
 
 __all__ = [
     "AGNewsConverter",
@@ -26,4 +27,5 @@ __all__ = [
     "JGlueMarcJaConverter",
     "MNLIConverter",
     "SST5Converter",
+    "SyntheticDatasetConverter",
 ]

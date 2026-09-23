@@ -118,21 +118,26 @@ class JevDecisionModel(nn.Module):
         input_ids: Tensor,
         attention_mask: Tensor,
         op_indices: Tensor,
-    ) -> Tensor:
+        return_features: bool = False,
+    ) -> Tensor | tuple[Tensor, Tensor, Tensor]:
         """単一フォワードパスで決定ロジットを算出する。
 
         内部ロジック:
         1. バックボーンエンコーダで全系列の隠れ状態 `last_hidden_state` を取得する。
         2. `OptionGatherLayer` で `op_indices` に対応する各候補マーカーの隠れベクトルを抽出する。
         3. `DecisionHead` で候補ごとのスカラーロジット `[batch_size, num_options]` を算出する。
+        4. `return_features=True` の場合は対照損失用に文脈表現ベクトルと候補ベクトルも同時に返却する。
 
         Args:
             input_ids (Tensor): トークンID列 `[batch_size, seq_len]`。
             attention_mask (Tensor): アテンションマスク `[batch_size, seq_len]`。
             op_indices (Tensor): 候補マーカー位置インデックス `[batch_size, num_options]`。
+            return_features (bool): 文脈埋め込みおよび候補隠れ状態を同時に返却するかどうか。
 
         Returns:
-            Tensor: 各候補のロジット `[batch_size, num_options]`。
+            Tensor | tuple[Tensor, Tensor, Tensor]:
+                - 通常時: 各候補のロジット `[batch_size, num_options]`。
+                - 特徴量返却時: (logits, state_repr, option_vectors) のタプル。
         """
         outputs = self.backbone(
             input_ids=input_ids,
@@ -140,7 +145,17 @@ class JevDecisionModel(nn.Module):
         )
         last_hidden_state: Tensor = outputs.last_hidden_state
         option_vectors = self.gather_layer(last_hidden_state, op_indices)
-        return self.decision_head(option_vectors)
+        logits = self.decision_head(option_vectors)
+
+        if return_features:
+            # アテンションマスクを考慮した平均プーリングで文脈全体のセントロイドを算出
+            mask_expanded = attention_mask.unsqueeze(-1).float()
+            state_repr = (last_hidden_state * mask_expanded).sum(
+                dim=1
+            ) / mask_expanded.sum(dim=1).clamp(min=1e-8)
+            return logits, state_repr, option_vectors
+
+        return logits
 
     @classmethod
     def get_input_names(cls) -> list[str]:

@@ -15,6 +15,31 @@ from contract import MAX_SEQUENCE_LENGTH, TOKEN_OPTION_MARKER
 from data.schema import QuestionType, UnifiedSample
 
 
+def _build_criteria_text(sample: UnifiedSample, option_keys: list[str]) -> str:
+    """候補キー順序リストに基づき Criteria 文字列を構築する。
+
+    各候補の先頭に [OP] マーカーを付与し、半角空白で区切って結合する。
+
+    Args:
+        sample (UnifiedSample): 統一中間サンプル。
+        option_keys (list[str]): 並び替え済みの候補キーリスト。
+
+    Returns:
+        str: 構築された Criteria 文字列。
+    """
+    if sample.question_type == QuestionType.NOUL:
+        label_map = {
+            "true": "真 (True)",
+            "false": "偽 (False)",
+        }
+        criteria_parts = [f"{TOKEN_OPTION_MARKER} {label_map[k]}" for k in option_keys]
+    else:
+        criteria_parts = [
+            f"{TOKEN_OPTION_MARKER} {sample.criteria[k]}" for k in option_keys
+        ]
+    return " ".join(criteria_parts)
+
+
 def format_prompt(
     sample: UnifiedSample,
     shuffle_options: bool = False,
@@ -24,10 +49,11 @@ def format_prompt(
 
     Choice 型では Criteria の各候補の先頭に [OP] マーカーを付与して結合する。
     Noul 型では暗黙の真偽2候補 '[OP] 真 (True) [OP] 偽 (False)' を展開する。
+    Score 型および Noul 型では幾何構造および契約保護のためシャッフルは常に無効化される。
 
     Args:
         sample (UnifiedSample): 統一中間サンプル。
-        shuffle_options (bool): 候補順序をランダムシャッフルするかどうか。
+        shuffle_options (bool): 候補順序をランダムシャッフルするかどうか (Choice 型のみ有効)。
         seed (int | None): シャッフル用の乱数シード。
 
     Returns:
@@ -40,15 +66,12 @@ def format_prompt(
     """
     if sample.question_type == QuestionType.CHOICE:
         option_keys = list(sample.criteria.keys())
+        # Choice 型のみ、要求に応じて局所乱数生成器で動的シャッフルを実行
         if shuffle_options:
             rng = random.Random(seed)
             rng.shuffle(option_keys)
 
-        criteria_parts = [
-            f"{TOKEN_OPTION_MARKER} {sample.criteria[k]}" for k in option_keys
-        ]
-        criteria_text = " ".join(criteria_parts)
-
+        criteria_text = _build_criteria_text(sample, option_keys)
         prompt = (
             f"State: {sample.state}\n"
             f"Instructions: {sample.instructions}\n"
@@ -57,19 +80,9 @@ def format_prompt(
         return prompt, option_keys
 
     elif sample.question_type == QuestionType.NOUL:
-        # Noul 型は真偽二値候補として展開
+        # Noul 型は二値契約 (true: 0, false: 1) を保持するため、シャッフルは常に無効化
         option_keys = ["true", "false"]
-        if shuffle_options:
-            rng = random.Random(seed)
-            rng.shuffle(option_keys)
-
-        label_map = {
-            "true": "真 (True)",
-            "false": "偽 (False)",
-        }
-        criteria_parts = [f"{TOKEN_OPTION_MARKER} {label_map[k]}" for k in option_keys]
-        criteria_text = " ".join(criteria_parts)
-
+        criteria_text = _build_criteria_text(sample, option_keys)
         prompt = (
             f"State: {sample.state}\n"
             f"Instructions: {sample.instructions}\n"
@@ -78,13 +91,9 @@ def format_prompt(
         return prompt, option_keys
 
     elif sample.question_type == QuestionType.SCORE:
-        # Score 型: 評価段階を順序通りに展開
+        # Score 型は順序尺度空間 (EMD / Wasserstein 幾何構造) を保護するため、常に昇順で固定
         option_keys = list(sample.criteria.keys())
-        criteria_parts = [
-            f"{TOKEN_OPTION_MARKER} {sample.criteria[k]}" for k in option_keys
-        ]
-        criteria_text = " ".join(criteria_parts)
-
+        criteria_text = _build_criteria_text(sample, option_keys)
         prompt = (
             f"State: {sample.state}\n"
             f"Instructions: {sample.instructions}\n"
@@ -165,15 +174,8 @@ def tokenize_sample(
         )
     target_index = option_keys.index(sample.target)
 
-    # 1. Criteria 文字列の構築 ([OP] の前後に半角スペースを確保)
-    if sample.question_type == QuestionType.NOUL:
-        label_map = {"true": "真 (True)", "false": "偽 (False)"}
-        criteria_parts = [f"{TOKEN_OPTION_MARKER} {label_map[k]}" for k in option_keys]
-    else:
-        criteria_parts = [
-            f"{TOKEN_OPTION_MARKER} {sample.criteria[k]}" for k in option_keys
-        ]
-    criteria_text = " ".join(criteria_parts)
+    # Criteria 文字列の構築 ([OP] の前後に半角スペースを確保)
+    criteria_text = _build_criteria_text(sample, option_keys)
 
     prefix_text = "State: "
     suffix_text = f"\nInstructions: {sample.instructions}\nCriteria: {criteria_text}"
