@@ -7,6 +7,10 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
+use crate::gating::{
+    DEFAULT_HIGH_CONFIDENCE_THRESHOLD, DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_TOP_MARGIN_THRESHOLD,
+};
 use crate::schema::QuestionType;
 
 /// 候補数バケットに基づく温度係数マップ。
@@ -49,6 +53,44 @@ impl Default for TemperatureMap {
     }
 }
 
+/// ゲーティング判定用閾値設定構造体。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GatingThresholds {
+    /// 高確信度下限閾値 (自動実行境界)。
+    #[serde(default = "default_high_threshold")]
+    pub high_threshold: f64,
+
+    /// 中確信度下限閾値 (確認要求境界)。
+    #[serde(default = "default_low_threshold")]
+    pub low_threshold: f64,
+
+    /// 上位2候補確率マージン閾値。
+    #[serde(default = "default_top_margin_threshold")]
+    pub top_margin_threshold: f64,
+}
+
+fn default_high_threshold() -> f64 {
+    DEFAULT_HIGH_CONFIDENCE_THRESHOLD
+}
+
+fn default_low_threshold() -> f64 {
+    DEFAULT_LOW_CONFIDENCE_THRESHOLD
+}
+
+fn default_top_margin_threshold() -> f64 {
+    DEFAULT_TOP_MARGIN_THRESHOLD
+}
+
+impl Default for GatingThresholds {
+    fn default() -> Self {
+        Self {
+            high_threshold: DEFAULT_HIGH_CONFIDENCE_THRESHOLD,
+            low_threshold: DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+            top_margin_threshold: DEFAULT_TOP_MARGIN_THRESHOLD,
+        }
+    }
+}
+
 /// 成果物引き渡し用 `calibration.json` のスキーマ構造体。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationConfig {
@@ -61,6 +103,10 @@ pub struct CalibrationConfig {
 
     /// 質問プリミティブ別の温度テーブルマップ。
     pub temperature_map: TemperatureMap,
+
+    /// ゲーティング判定用閾値設定。
+    #[serde(default)]
+    pub gating_thresholds: GatingThresholds,
 }
 
 fn default_temperature() -> f64 {
@@ -73,6 +119,7 @@ impl Default for CalibrationConfig {
             version: "1.0".to_string(),
             default_temperature: 1.0,
             temperature_map: TemperatureMap::default(),
+            gating_thresholds: GatingThresholds::default(),
         }
     }
 }
@@ -84,7 +131,14 @@ impl CalibrationConfig {
             version: version.into(),
             default_temperature: 1.0,
             temperature_map,
+            gating_thresholds: GatingThresholds::default(),
         }
+    }
+
+    /// ゲーティング閾値を設定して自身を返却する。
+    pub fn with_gating_thresholds(mut self, gating_thresholds: GatingThresholds) -> Self {
+        self.gating_thresholds = gating_thresholds;
+        self
     }
 
     /// JSON 文字列からデシリアライズする。
@@ -197,6 +251,7 @@ mod tests {
                 score,
                 noul: 0.95,
             },
+            gating_thresholds: GatingThresholds::default(),
         };
 
         let json = config.to_json_string().unwrap();

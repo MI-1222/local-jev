@@ -8,12 +8,12 @@ use indexmap::IndexMap;
 use crate::contract::CalibrationConfig;
 use crate::error::{CoreError, Result};
 use crate::math::{
-    argmax, expected_score, normalized_entropy_confidence, normalized_variance_confidence,
-    noul_probability, softmax_into,
+    argmax, composite_confidence, expected_score, normalized_variance_confidence, noul_probability,
+    softmax_into,
 };
 use crate::schema::{Answer, Criteria, Question, QuestionType};
 
-/// 作業用バッファを活用し、Choice プリミティブの生ロジットから採択候補、確率分布、および確信度を算出する。
+/// 作業用バッファを活用し、Choice プリミティブの生ロジットから採択候補、確率分布、および複合確信度を算出する。
 ///
 /// # 概要
 /// - 呼び出し側から作業用バッファスライス (`probs_buf`) を受け取ることで、推論バッチ処理における
@@ -21,6 +21,8 @@ use crate::schema::{Answer, Criteria, Question, QuestionType};
 /// - 候補キーの順序付きマップ (`Criteria::Map`) とロジット列を 1 対 1 で結合する。
 /// - 候補数 $K=1$ の特異点では、ショートサーキットにより確信度 1.0・確率 1.0 を即座に返却する。
 /// - 最大確率を与える候補の採択には決定論的タイブレーク規則が適用され、同率最大時は先頭インデックスが採択される。
+/// - 確信度には、候補数 $K$ に非依存な正規化エントロピーと Top-Margin を統合した
+///   複合確信度スコア $S_{\text{confidence}} = (1.0 - H_{\text{norm}}) \times M(p)$ を採用する。
 ///
 /// # 引数
 /// - `logits`: 未正規化の生ロジットスライス(`f64`)。
@@ -85,8 +87,8 @@ pub fn evaluate_choice_with_buf(
         .get_index(best_idx)
         .expect("best_idx は 0..k の範囲内であることが保証されている。");
 
-    // 正規化シャノンエントロピー確信度の算出。
-    let confidence = normalized_entropy_confidence(probs_buf)?;
+    // 候補数非依存の複合確信度スコア S_confidence = (1 - H_norm) * M(p) の算出。
+    let confidence = composite_confidence(probs_buf)?;
 
     // 候補識別子と確率値のマッピング構築。
     let mut probabilities = IndexMap::with_capacity(k);

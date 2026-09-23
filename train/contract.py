@@ -33,6 +33,145 @@ MAX_NUM_OPTIONS: int = 255
 MIN_NUM_OPTIONS: int = 1
 """単一質問あたりの最小候補数。"""
 
+DEFAULT_HIGH_CONFIDENCE_THRESHOLD: float = 0.85
+"""自動実行 (AutoExecute) と判定するための高確信度下限閾値。"""
+
+DEFAULT_LOW_CONFIDENCE_THRESHOLD: float = 0.50
+"""確認・二次検証要求 (ConfirmOrEscalate) と判定するための中確信度下限閾値。"""
+
+DEFAULT_TOP_MARGIN_THRESHOLD: float = 0.15
+"""上位2候補の最小確率マージン閾値。"""
+
+
+def compute_normalized_entropy(probabilities: list[float] | tuple[float, ...]) -> float:
+    """確率分布から候補数 K に非依存な正規化シャノンエントロピー H_norm を算出する。
+
+    数理仕様:
+    $$H_{\\text{norm}}(p) = \\begin{cases} 0.0 & (K = 1) \\\\ \\frac{-\\sum_{k=1}^K p_k \\ln p_k}{\\ln K} & (K \\ge 2) \\end{cases}$$
+
+    Args:
+        probabilities (list[float] | tuple[float, ...]): 各候補の確率値シーケンス。
+
+    Returns:
+        float: [0.0, 1.0] にクランプされた正規化エントロピー。
+
+    Raises:
+        ValueError: 配列が空、または負数や非有限値が含まれている場合。
+    """
+    import math
+
+    k = len(probabilities)
+    if k == 0:
+        raise ValueError("確率分布配列が空です。")
+    if k == 1:
+        p0 = probabilities[0]
+        if not math.isfinite(p0) or p0 < 0.0:
+            raise ValueError(f"不正な確率値が含まれています: {p0}。")
+        return 0.0
+
+    entropy = 0.0
+    for p in probabilities:
+        if not math.isfinite(p) or p < 0.0:
+            raise ValueError(f"不正な確率値が含まれています: {p}。")
+        if p > 0.0:
+            entropy -= p * math.log(p)
+
+    max_entropy = math.log(k)
+    if max_entropy <= 0.0:
+        return 0.0
+    h_norm = entropy / max_entropy
+    return max(0.0, min(1.0, float(h_norm)))
+
+
+def compute_top_margin(probabilities: list[float] | tuple[float, ...]) -> float:
+    """確率分布から上位2候補の確率差 (Top-Margin) M(p) を算出する。
+
+    数理仕様:
+    $$M(p) = \\begin{cases} 1.0 & (K = 1) \\\\ p_{(1)} - p_{(2)} & (K \\ge 2) \\end{cases}$$
+
+    Args:
+        probabilities (list[float] | tuple[float, ...]): 各候補の確率値シーケンス。
+
+    Returns:
+        float: [0.0, 1.0] にクランプされた Top-Margin。
+
+    Raises:
+        ValueError: 配列が空、または負数や非有限値が含まれている場合。
+    """
+    import math
+
+    k = len(probabilities)
+    if k == 0:
+        raise ValueError("確率分布配列が空です。")
+    if k == 1:
+        p0 = probabilities[0]
+        if not math.isfinite(p0) or p0 < 0.0:
+            raise ValueError(f"不正な確率値が含まれています: {p0}。")
+        return 1.0
+
+    max1 = -math.inf
+    max2 = -math.inf
+    for p in probabilities:
+        if not math.isfinite(p) or p < 0.0:
+            raise ValueError(f"不正な確率値が含まれています: {p}。")
+        if p > max1:
+            max2 = max1
+            max1 = p
+        elif p > max2:
+            max2 = p
+
+    margin = max1 - max2
+    return max(0.0, min(1.0, float(margin)))
+
+
+def compute_composite_confidence(
+    probabilities: list[float] | tuple[float, ...],
+) -> float:
+    """正規化エントロピーと Top-Margin を統合した複合確信度スコア S_confidence を算出する。
+
+    数理仕様:
+    $$S_{\\text{confidence}}(p) = (1.0 - H_{\\text{norm}}(p)) \\times M(p)$$
+
+    Args:
+        probabilities (list[float] | tuple[float, ...]): 各候補の確率値シーケンス。
+
+    Returns:
+        float: [0.0, 1.0] にクランプされた複合確信度スコア。
+
+    Raises:
+        ValueError: 配列が空、または負数や非有限値が含まれている場合。
+    """
+    import math
+
+    k = len(probabilities)
+    if k == 0:
+        raise ValueError("確率分布配列が空です。")
+    if k == 1:
+        p0 = probabilities[0]
+        if not math.isfinite(p0) or p0 < 0.0:
+            raise ValueError(f"不正な確率値が含まれています: {p0}。")
+        return 1.0
+
+    h_norm = compute_normalized_entropy(probabilities)
+    margin = compute_top_margin(probabilities)
+    score = (1.0 - h_norm) * margin
+    return max(0.0, min(1.0, float(score)))
+
+
+@dataclass
+class GatingThresholds:
+    """ゲーティング判定用閾値設定。
+
+    Attributes:
+        high_threshold (float): 高確信度下限閾値 (自動実行境界)。
+        low_threshold (float): 中確信度下限閾値 (確認要求境界)。
+        top_margin_threshold (float): 上位2候補確率マージン閾値。
+    """
+
+    high_threshold: float = DEFAULT_HIGH_CONFIDENCE_THRESHOLD
+    low_threshold: float = DEFAULT_LOW_CONFIDENCE_THRESHOLD
+    top_margin_threshold: float = DEFAULT_TOP_MARGIN_THRESHOLD
+
 
 @dataclass
 class TemperatureMap:
@@ -69,11 +208,13 @@ class CalibrationConfig:
         version (str): キャリブレーションスキーマのバージョン。
         default_temperature (float): バケットに合致しない場合に使用するフォールバック温度。
         temperature_map (TemperatureMap): プリミティブ別の温度テーブル。
+        gating_thresholds (GatingThresholds): 確信度ゲーティング閾値設定。
     """
 
     version: str = "1.0"
     default_temperature: float = 1.0
     temperature_map: TemperatureMap = field(default_factory=TemperatureMap)
+    gating_thresholds: GatingThresholds = field(default_factory=GatingThresholds)
 
     def to_dict(self) -> dict[str, Any]:
         """辞書オブジェクトへ変換する。
@@ -122,8 +263,21 @@ class CalibrationConfig:
             score=data.get("temperature_map", {}).get("score", {}),
             noul=data.get("temperature_map", {}).get("noul", 1.0),
         )
+        raw_thresholds = data.get("gating_thresholds", {})
+        gating_thresholds = GatingThresholds(
+            high_threshold=raw_thresholds.get(
+                "high_threshold", DEFAULT_HIGH_CONFIDENCE_THRESHOLD
+            ),
+            low_threshold=raw_thresholds.get(
+                "low_threshold", DEFAULT_LOW_CONFIDENCE_THRESHOLD
+            ),
+            top_margin_threshold=raw_thresholds.get(
+                "top_margin_threshold", DEFAULT_TOP_MARGIN_THRESHOLD
+            ),
+        )
         return cls(
             version=data.get("version", "1.0"),
             default_temperature=data.get("default_temperature", 1.0),
             temperature_map=temp_map,
+            gating_thresholds=gating_thresholds,
         )
