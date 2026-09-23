@@ -19,6 +19,7 @@ from data.converters.jglue_jsts import JGlueJSTSConverter
 from data.converters.jglue_marc_ja import JGlueMarcJaConverter
 from data.converters.mnli import MNLIConverter
 from data.converters.sst5 import SST5Converter
+from data.converters.synthetic import SyntheticDatasetConverter
 from data.negative_sampler import SyntheticNegativeInjector
 from data.schema import UnifiedSample
 
@@ -58,6 +59,10 @@ class UnifiedDatasetBuilder:
             "jglue_jnli_noul": JGlueJNLIConverter(mode="noul", seed=seed),
             "jglue_jsts": JGlueJSTSConverter(seed=seed),
             "jglue_jcommonsenseqa": JGlueJCommonsenseQAConverter(seed=seed),
+            "synthetic_all": SyntheticDatasetConverter(mode="all", seed=seed),
+            "synthetic_choice": SyntheticDatasetConverter(mode="choice", seed=seed),
+            "synthetic_score": SyntheticDatasetConverter(mode="score", seed=seed),
+            "synthetic_noul": SyntheticDatasetConverter(mode="noul", seed=seed),
         }
 
     def register_converter(self, name: str, converter: BaseDatasetConverter) -> None:
