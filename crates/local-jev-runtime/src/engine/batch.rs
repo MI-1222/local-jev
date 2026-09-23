@@ -202,6 +202,7 @@ impl InferenceEngine {
             )?;
             apply_gating_to_answer(
                 &mut answer,
+                Some(state),
                 Some(q_key),
                 Some(question),
                 gating_config,
@@ -283,6 +284,7 @@ impl InferenceEngine {
             )?;
             apply_gating_to_answer(
                 &mut answer,
+                Some(state),
                 Some(q_key),
                 Some(question),
                 gating_config,
@@ -433,6 +435,7 @@ impl InferenceEngine {
                 )?;
                 apply_gating_to_answer(
                     &mut answer,
+                    Some(state),
                     Some(q_key),
                     Some(question),
                     gating_config,
@@ -521,7 +524,14 @@ impl InferenceEngine {
                 let full_probs = reconstruct_probabilities(original_keys, sub_probs);
                 answer.probabilities = Some(full_probs);
                 let orig_q = questions.get(q_key);
-                apply_gating_to_answer(answer, Some(q_key), orig_q, None, calib_config);
+                apply_gating_to_answer(
+                    answer,
+                    Some(state),
+                    Some(q_key),
+                    orig_q,
+                    None,
+                    calib_config,
+                );
             }
         }
 
@@ -706,6 +716,7 @@ impl InferenceEngine {
                     let orig_q = questions.get(q_key);
                     apply_gating_to_answer(
                         &mut answer,
+                        Some(state),
                         Some(q_key),
                         orig_q,
                         gating_config,
@@ -724,7 +735,14 @@ impl InferenceEngine {
                 let full_probs = reconstruct_probabilities(original_keys, sub_probs);
                 answer.probabilities = Some(full_probs);
                 let orig_q = questions.get(q_key);
-                apply_gating_to_answer(answer, Some(q_key), orig_q, gating_config, calib_config);
+                apply_gating_to_answer(
+                    answer,
+                    Some(state),
+                    Some(q_key),
+                    orig_q,
+                    gating_config,
+                    calib_config,
+                );
             }
         }
 

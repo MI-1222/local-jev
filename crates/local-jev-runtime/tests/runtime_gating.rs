@@ -191,6 +191,12 @@ fn test_batch_and_chunked_gating() {
             qid
         );
         assert!(gating.escalation.is_some());
+        let esc = gating.escalation.as_ref().unwrap();
+        assert!(esc.prompt_template.is_some());
+        let prompt = esc.prompt_template.as_ref().unwrap();
+        assert!(prompt.contains("<context>"));
+        assert!(prompt.contains("ログインボタンを押しても画面が遷移しません"));
+        assert!(prompt.contains("思考連鎖 (Chain-of-Thought)"));
     }
 
     // チャンク推論 (chunk_size = 1) でのゲーティング

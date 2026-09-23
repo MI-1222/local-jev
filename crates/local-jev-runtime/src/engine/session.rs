@@ -538,6 +538,7 @@ impl InferenceEngine {
                 evaluate_question(question, &logits, calib_config).map_err(RuntimeError::Core)?;
             apply_gating_to_answer(
                 &mut answer,
+                Some(state),
                 None,
                 Some(question),
                 gating_config,
@@ -587,6 +588,7 @@ impl InferenceEngine {
         // 6. ゲーティング判定の適用 (縮小空間での確信度を尊重しつつ監査メタデータを付与)
         apply_gating_to_answer(
             &mut answer,
+            Some(state),
             None,
             Some(question),
             gating_config,
