@@ -422,6 +422,110 @@ pub fn normalized_variance_confidence(probabilities: &[f64]) -> Result<f64> {
     Ok(confidence.clamp(0.0, 1.0))
 }
 
+/// Score 型の確率分布から、理論最大分散に対する事後分散の比率 $\text{VarRatio} \in [0.0, 1.0]$ を算出する。
+///
+/// # 概要
+/// - $M$ 段階における理論最大分散 $V_{\max} = \frac{(M-1)^2}{4}$ に対する比率を計算する。
+/// - 両端（$0$ と $M-1$）に $0.5$ ずつ配分された完全二峰性分布では $1.0$ となる。
+///
+/// # 引数
+/// - `probabilities`: 各段階レベルの確率分布スライス ($M \ge 2$)。
+///
+/// # 戻り値
+/// - 成功時は `[0.0, 1.0]` にクランプされた分散比率、不正時は `CoreError::MathError`。
+pub fn score_variance_ratio(probabilities: &[f64]) -> Result<f64> {
+    let m = probabilities.len();
+    if m < 2 {
+        return Err(CoreError::MathError {
+            message: "Score の分散比率計算には 2 段階以上の確率分布が必要です。".to_string(),
+        });
+    }
+
+    let var = score_variance(probabilities)?;
+    let max_var = ((m - 1) as f64).powi(2) / 4.0;
+
+    if max_var <= 0.0 {
+        return Ok(0.0);
+    }
+
+    let ratio = var / max_var;
+    Ok(ratio.clamp(0.0, 1.0))
+}
+
+/// Score 型の確率分布から双峰性係数 (Bimodality Coefficient: $BC$) を算出する。
+///
+/// # 概要
+/// - 離散確率分布における母集団中心モーメント（2次、3次、4次）を直接算出し、
+///   標本補正項による $M \le 3$ でのゼロ除算クラッシュを完全に排除した閉じた数理計算を行う。
+/// - 単峰性分布では $BC < 0.555$ となり、完全一様分布では $BC \approx 0.555$、
+///   両端対立（二極化）分布では $BC \to 1.0$ へ漸近する。
+/// - 極小分散 ($\sigma^2 < 10^{-6}$) の場合は、完全単峰・高確信度と判定してゼロ除算を回避し、
+///   即座に $0.0$ を返却する。
+///
+/// # 数理仕様
+/// $$BC = \frac{\gamma^2 + 1}{\kappa}$$
+/// ここで、歪度 $\gamma = \frac{\mu_3}{\sigma^3}$、尖度 $\kappa = \frac{\mu_4}{\sigma^4}$、
+/// $\mu_r = \sum_{k=0}^{M-1} (k - \mu)^r p_k$ である。
+///
+/// # 引数
+/// - `probabilities`: 各段階レベルの確率分布スライス ($M \ge 2$)。
+///
+/// # 戻り値
+/// - 成功時は `[0.0, 1.0]` の閉区間にクランプされた双峰性係数、不正時は `CoreError::MathError`。
+pub fn bimodality_coefficient(probabilities: &[f64]) -> Result<f64> {
+    let m = probabilities.len();
+    if m < 2 {
+        return Err(CoreError::MathError {
+            message: "双峰性係数の計算には 2 段階以上の確率分布が必要です。".to_string(),
+        });
+    }
+
+    let mean = expected_score(probabilities)?;
+
+    // 2次中心モーメント (分散 sigma^2)
+    let mut variance = 0.0;
+    // 3次中心モーメント mu_3
+    let mut mu3 = 0.0;
+    // 4次中心モーメント mu_4
+    let mut mu4 = 0.0;
+
+    for (k, &p) in probabilities.iter().enumerate() {
+        if p < 0.0 {
+            return Err(CoreError::MathError {
+                message: format!("負の確率値が含まれています: {p}。"),
+            });
+        }
+        let diff = (k as f64) - mean;
+        let diff2 = diff * diff;
+        variance += diff2 * p;
+        mu3 += diff2 * diff * p;
+        mu4 += diff2 * diff2 * p;
+    }
+
+    // 極小分散 (ワンホット等) のショートサーキット判定
+    if variance < 1e-6 {
+        return Ok(0.0);
+    }
+
+    let sigma = variance.sqrt();
+    let sigma3 = variance * sigma;
+    let sigma4 = variance * variance;
+
+    if sigma4 <= 0.0 {
+        return Ok(0.0);
+    }
+
+    let gamma = mu3 / sigma3;
+    let kurtosis = mu4 / sigma4;
+
+    if kurtosis <= 0.0 {
+        return Ok(0.0);
+    }
+
+    let bc = (gamma * gamma + 1.0) / kurtosis;
+    Ok(bc.clamp(0.0, 1.0))
+}
+
 /// Noul 型の言明真実確率値 $P(\text{true}) \in [0.0, 1.0]$ を算出する。
 ///
 /// # 概要
@@ -918,5 +1022,65 @@ mod tests {
         assert!(composite_confidence(&[]).is_err());
         assert!(composite_confidence(&[-0.1, 1.1]).is_err());
         assert!(composite_confidence(&[0.5, f64::NAN]).is_err());
+    }
+
+    #[test]
+    fn test_bimodality_coefficient() {
+        // 1. ワンホット極限: 分散ゼロのため 0.0 を返却する。
+        let p_onehot = vec![1.0, 0.0, 0.0, 0.0];
+        assert_eq!(bimodality_coefficient(&p_onehot).unwrap(), 0.0);
+
+        // 2. 完全両端対立 (二峰性): [0.5, 0.0, 0.0, 0.5]
+        // 平均 1.5, mu_2 = 2.25, mu_3 = 0.0, mu_4 = 5.0625, kurtosis = 1.0 -> BC = 1.0
+        let p_bimodal = vec![0.5, 0.0, 0.0, 0.5];
+        let bc_bimodal = bimodality_coefficient(&p_bimodal).unwrap();
+        assert!((bc_bimodal - 1.0).abs() < 1e-6);
+
+        // 3. 5段階の両端対立: [0.5, 0.0, 0.0, 0.0, 0.5]
+        let p_bimodal_5 = vec![0.5, 0.0, 0.0, 0.0, 0.5];
+        let bc_bimodal_5 = bimodality_coefficient(&p_bimodal_5).unwrap();
+        assert!((bc_bimodal_5 - 1.0).abs() < 1e-6);
+
+        // 4. 一様分布: 離散一様分布では M に応じて 0.555〜0.65 付近となる (連続極限で 5/9 ≈ 0.555)。
+        let p_uniform_4 = vec![0.25, 0.25, 0.25, 0.25];
+        let bc_uniform_4 = bimodality_coefficient(&p_uniform_4).unwrap();
+        assert!(bc_uniform_4 > 0.55 && bc_uniform_4 < 0.65);
+
+        let p_uniform_10 = vec![0.1; 10];
+        let bc_uniform_10 = bimodality_coefficient(&p_uniform_10).unwrap();
+        assert!(bc_uniform_10 > 0.55 && bc_uniform_10 < 0.60);
+
+        // 5. 単峰山型分布: [0.05, 0.2, 0.5, 0.2, 0.05] -> BC は 0.555 未満
+        let p_unimodal = vec![0.05, 0.2, 0.5, 0.2, 0.05];
+        let bc_unimodal = bimodality_coefficient(&p_unimodal).unwrap();
+        assert!(bc_unimodal < 0.555);
+
+        // 6. 隣接割れ (低分散): [0.0, 0.5, 0.5, 0.0]
+        // 平均 1.5, 分散 0.25, kurtosis = 1.0 -> BC = 1.0 だが分散比率は極めて小さい
+        let p_adjacent = vec![0.0, 0.5, 0.5, 0.0];
+        let var_ratio = score_variance_ratio(&p_adjacent).unwrap();
+        assert!(var_ratio < 0.20);
+
+        // 7. 異常系
+        assert!(bimodality_coefficient(&[]).is_err());
+        assert!(bimodality_coefficient(&[1.0]).is_err());
+        assert!(bimodality_coefficient(&[-0.1, 1.1]).is_err());
+    }
+
+    #[test]
+    fn test_score_variance_ratio() {
+        // 1. 完全両端対立: 理論最大分散と一致するため 1.0
+        let p_bimodal = vec![0.5, 0.0, 0.0, 0.5];
+        let ratio = score_variance_ratio(&p_bimodal).unwrap();
+        assert!((ratio - 1.0).abs() < 1e-6);
+
+        // 2. ワンホット: 分散 0.0
+        let p_onehot = vec![0.0, 1.0, 0.0, 0.0];
+        let ratio_onehot = score_variance_ratio(&p_onehot).unwrap();
+        assert!(ratio_onehot < 1e-6);
+
+        // 3. 異常系
+        assert!(score_variance_ratio(&[]).is_err());
+        assert!(score_variance_ratio(&[1.0]).is_err());
     }
 }
