@@ -31,7 +31,7 @@ from data.dataset import JevDataset, pad_jev_collate_fn
 from models.backbone import prepare_backbone_and_tokenizer, save_tokenizer_for_runtime
 from models.decision_head import JevDecisionModel
 from training.config import SFTConfig
-from training.loss import MaskedCrossEntropyLoss
+from training.loss import JevMultiTaskLoss
 from training.metrics import MetricsTracker
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,17 @@ class SFTTrainer:
             self.tokenizer = tokenizer
             self.op_token_id = op_token_id
 
-        self.loss_fn = MaskedCrossEntropyLoss()
+        self.loss_fn: nn.Module = JevMultiTaskLoss(
+            label_smoothing=config.label_smoothing,
+            focal_gamma=config.focal_gamma,
+            score_loss_power=config.score_loss_power,
+            noul_pos_weight=config.noul_pos_weight,
+            contrastive_weight=config.contrastive_weight,
+            contrastive_temperature=config.contrastive_temperature,
+            choice_weight=config.choice_weight,
+            score_weight=config.score_weight,
+            noul_weight=config.noul_weight,
+        )
         self.metrics_tracker = MetricsTracker()
 
         self.best_metric = -1.0
@@ -440,16 +450,38 @@ class SFTTrainer:
             labels = batch["labels"].to(device)
 
             with self.accelerator.accumulate(model):
-                logits = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    op_indices=op_indices,
-                )
-                loss = self.loss_fn(
-                    logits=logits,
-                    labels=labels,
-                    op_mask=op_mask,
-                )
+                if self.config.contrastive_weight > 0.0:
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        op_indices=op_indices,
+                        return_features=True,
+                    )
+                    logits, state_repr, option_vectors = outputs  # type: ignore[misc]
+                else:
+                    logits = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        op_indices=op_indices,
+                    )
+                    state_repr = None
+                    option_vectors = None
+
+                if isinstance(self.loss_fn, JevMultiTaskLoss):
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                        question_types=batch.get("question_types"),
+                        state_repr=state_repr,
+                        option_repr=option_vectors,
+                    )
+                else:
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                    )
 
                 self.accelerator.backward(loss)
 
@@ -520,11 +552,19 @@ class SFTTrainer:
                     attention_mask=attention_mask,
                     op_indices=op_indices,
                 )
-                loss = self.loss_fn(
-                    logits=logits,
-                    labels=labels,
-                    op_mask=op_mask,
-                )
+                if isinstance(self.loss_fn, JevMultiTaskLoss):
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                        question_types=batch.get("question_types"),
+                    )
+                else:
+                    loss = self.loss_fn(
+                        logits=logits,
+                        labels=labels,
+                        op_mask=op_mask,
+                    )
 
                 loss_val = float(loss.item())
                 self.metrics_tracker.update(

@@ -4,7 +4,15 @@
 """
 
 from training.config import SFTConfig
-from training.loss import MaskedCrossEntropyLoss, compute_masked_loss
+from training.loss import (
+    AsymmetricBCELoss,
+    EarthMoverDistanceLoss,
+    InfoNCEContrastiveLoss,
+    JevMultiTaskLoss,
+    LabelSmoothedFocalLoss,
+    MaskedCrossEntropyLoss,
+    compute_masked_loss,
+)
 from training.metrics import MetricsTracker
 from training.rlcd_config import RLCDConfig
 from training.rlcd_loss import (
@@ -31,6 +39,11 @@ from training.scoring_config import ScoringConfig
 from training.trainer import SFTDataset, SFTTrainer, sft_collate_fn
 
 __all__ = [
+    "AsymmetricBCELoss",
+    "EarthMoverDistanceLoss",
+    "InfoNCEContrastiveLoss",
+    "JevMultiTaskLoss",
+    "LabelSmoothedFocalLoss",
     "MaskedCrossEntropyLoss",
     "MetricsTracker",
     "ProperScoringEvaluator",

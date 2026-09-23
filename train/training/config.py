@@ -43,6 +43,15 @@ class SFTConfig:
         eval_metric (str): 最良チェックポイントおよび早期終了の判定に使用するメトリクス名。
         seed (int): 乱数シード。
         output_dir (str): 成果物およびログのベース出力ディレクトリ。
+        label_smoothing (float): Choice 型のラベル平滑化係数。
+        focal_gamma (float): Choice 型の Focal Loss 変調係数。0.0 で無効化。
+        score_loss_power (int): Score 型 EMD 損失のべき数 (1: Smooth L1 / L1, 2: 二乗 Wasserstein)。
+        noul_pos_weight (float): Noul 型 BCE 損失における正例 (True) の重み係数。
+        contrastive_weight (float): 補助対照損失 (InfoNCE) の重み係数。0.0 で無効化。
+        contrastive_temperature (float): 補助対照損失の温度パラメータ。
+        choice_weight (float): マルチタスク損失における Choice 型の損失重み。
+        score_weight (float): マルチタスク損失における Score 型の損失重み。
+        noul_weight (float): マルチタスク損失における Noul 型の損失重み。
     """
 
     model_name_or_path: str = DEFAULT_BACKBONE_MODEL_ID
@@ -72,6 +81,17 @@ class SFTConfig:
     max_grad_norm: float = 1.0
     early_stopping_patience: int | None = 3
     eval_metric: str = "choice_accuracy"
+
+    # JevMultiTaskLoss 関連ハイパーパラメータ
+    label_smoothing: float = 0.05
+    focal_gamma: float = 0.0
+    score_loss_power: int = 2
+    noul_pos_weight: float = 1.0
+    contrastive_weight: float = 0.0
+    contrastive_temperature: float = 0.07
+    choice_weight: float = 1.0
+    score_weight: float = 1.0
+    noul_weight: float = 1.0
 
     seed: int = 42
     output_dir: str = "runs/sft"
