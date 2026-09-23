@@ -8,6 +8,7 @@
 from collections.abc import Sequence
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from data.schema import QuestionType
@@ -160,8 +161,111 @@ def compute_entropy(
     return torch.sum(entropy_masked, dim=-1)
 
 
+def compute_listwise_dpo_loss(
+    policy_logits: Tensor,
+    ref_logits: Tensor,
+    labels: Tensor,
+    op_mask: Tensor,
+    beta: float = 0.10,
+    temperature: float = 1.0,
+    rankings: Tensor | None = None,
+    mask_value: float = DEFAULT_MASK_VALUE,
+) -> tuple[Tensor, dict[str, Tensor]]:
+    """Plackett-Luce ランキング選好モデルに基づく Listwise DPO 損失を算出する。
+
+    数理仕様:
+    参照モデルのロジット z_ref と学習対象モデルのロジット z_theta から暗黙の報酬 (Implicit Reward) を定義する:
+    $$r(x, c_k) = \\beta \\cdot (z_\\theta(x)_k - z_{\\text{ref}}(x)_k)$$
+    サンプリング温度 tau によるスケーリング:
+    $$\\hat{r}(x, c_k) = \\frac{r(x, c_k)}{\\tau}$$
+
+    1. 正解ターゲット y* が最上位 (rank 1) かつその他が下位の標準選好設定 (rankings is None):
+       有効候補集合 C_valid に対し、正解クラスへの Plackett-Luce 負の対数尤度を算出する:
+       $$\\mathcal{L}_{\\text{DPO}} = -\\ln \\left( \\frac{\\exp(\\hat{r}_{y^*})}{\\sum_{k \\in C_{\\text{valid}}} \\exp(\\hat{r}_k)} \\right)$$
+       これは暗黙報酬ベクトル \\hat{r} に対するマスク付き Cross-Entropy 損失と数理的に等価である。
+
+    2. 明示的な完全順序選好リスト \\pi = [c_{\\pi(1)}, \\dots, c_{\\pi(M)}] が与えられた場合 (rankings is not None):
+       再帰的な Plackett-Luce 分布に基づき、順位ごとの対数尤度を累積する:
+       $$\\mathcal{L}_{\\text{Listwise-DPO}} = -\\sum_{i=1}^{M-1} \\ln \\left( \\frac{\\exp(\\hat{r}_{\\pi(i)})}{\\sum_{j=i}^M \\exp(\\hat{r}_{\\pi(j)})} \\right)$$
+
+    Args:
+        policy_logits (Tensor): 学習対象ポリシーの未マスクロジット `[batch_size, num_options]`。
+        ref_logits (Tensor): 凍結参照モデルの未マスクロジット `[batch_size, num_options]`。
+        labels (Tensor): 正解候補インデックス `[batch_size]`。
+        op_mask (Tensor): 有効候補マスク `[batch_size, num_options]`。
+        beta (float): 暗黙報酬のスケーリング係数 beta。
+        temperature (float): スケーリング温度 tau。
+        rankings (Tensor | None): 各サンプルの候補選好順位インデックス `[batch_size, num_ranks]`。
+        mask_value (float): 無効候補に代入する負のマスキング値。
+
+    Returns:
+        tuple[Tensor, dict[str, Tensor]]:
+            - loss: サンプル平均の Listwise DPO 損失スカラー。
+            - metrics: モニタリング用の中間メトリクス辞書。
+    """
+    batch_size, num_options = policy_logits.shape
+    device = policy_logits.device
+    temp = max(temperature, 1e-4)
+
+    # 暗黙の報酬テンソル r = beta * (z_theta - z_ref)
+    implicit_reward = beta * (policy_logits - ref_logits.detach())
+    scaled_reward = implicit_reward / temp
+    masked_reward = scaled_reward.masked_fill(~op_mask, mask_value)
+
+    labels_clamped = labels.clamp(min=0, max=num_options - 1)
+    # 正解ターゲットの暗黙報酬
+    r_target = implicit_reward.gather(
+        dim=-1, index=labels_clamped.unsqueeze(-1)
+    ).squeeze(-1)
+
+    if rankings is None:
+        # 正解 y* を Top-1 とする Plackett-Luce 損失 (マスク付き Cross-Entropy)
+        loss_dpo = F.cross_entropy(masked_reward, labels_clamped, reduction="mean")
+    else:
+        # 明示的な順位テンソルに基づく多段階 Plackett-Luce 損失
+        sample_losses = []
+        for b in range(batch_size):
+            rank_list = rankings[b]
+            valid_ranks = [idx.item() for idx in rank_list if op_mask[b, idx]]
+            if len(valid_ranks) <= 1:
+                sample_losses.append(torch.tensor(0.0, device=device))
+                continue
+
+            pl_loss = torch.tensor(0.0, device=device)
+            for i in range(len(valid_ranks) - 1):
+                numerator = scaled_reward[b, valid_ranks[i]]
+                remaining_indices = torch.tensor(valid_ranks[i:], device=device)
+                denominator = torch.logsumexp(
+                    scaled_reward[b, remaining_indices], dim=0
+                )
+                pl_loss = pl_loss - (numerator - denominator)
+
+            sample_losses.append(pl_loss / max(1, len(valid_ranks) - 1))
+        loss_dpo = torch.stack(sample_losses).mean()
+
+    # 負例候補の平均暗黙報酬の算出
+    valid_mask_float = op_mask.float()
+    target_onehot = F.one_hot(labels_clamped, num_classes=num_options).float()
+    non_target_mask = (valid_mask_float - target_onehot).clamp(min=0.0)
+    non_target_count = non_target_mask.sum(dim=-1).clamp(min=1.0)
+    r_non_target = (implicit_reward * non_target_mask).sum(dim=-1) / non_target_count
+    reward_margin = r_target - r_non_target
+
+    metrics = {
+        "loss_dpo": loss_dpo.detach(),
+        "implicit_reward_mean": implicit_reward.mean().detach(),
+        "implicit_reward_target": r_target.mean().detach(),
+        "implicit_reward_non_target": r_non_target.mean().detach(),
+        "reward_margin": reward_margin.mean().detach(),
+    }
+    return loss_dpo, metrics
+
+
 class RLCDLoss(nn.Module):
     """RLCD (Reinforcement Learning from Calibrated Decisions) 損失層。
+
+    GRPO (Group Relative Policy Optimization) によるオンラインロジット摂動方策更新、
+    または Listwise DPO (Plackett-Luce モデル) によるオフライン選好最適化を提供する。
 
     Attributes:
         config (RLCDConfig): RLCD ハイパーパラメータ設定。
@@ -183,16 +287,20 @@ class RLCDLoss(nn.Module):
         labels: Tensor,
         op_mask: Tensor,
         question_types: Sequence[str | QuestionType] | None = None,
+        rankings: Tensor | None = None,
     ) -> tuple[Tensor, dict[str, Tensor]]:
         """RLCD ポリシー更新損失および詳細メトリクスを算出する。
 
         内部ロジック:
-        1. ベースモデルおよび参照モデルから温度付き正規化確率分布 p_theta, p_ref を導出する。
-        2. G 系統のロジット摂動テンソル z^(g) を生成し、無効候補マスクを再適用する。
-        3. 各摂動に対する確率分布 p^(g) を算出し、厳密適格スコア複合報酬 R_g を一括計算する。
-        4. サンプル内の G 摂動間で平均・分散を求め、標準化アドバンテージ A_g を算出する。
-        5. 正解ラベルに対する確率比 r_g(y) = p_theta(y) / p^(g)(y) を用い、PPO スタイルのクリップサロゲート損失を計算する。
-        6. 有効候補マスクを考慮した KL ペナルティ D_KL(p_theta || p_ref) およびエントロピーを合算する。
+        1. config.optimization_mode に応じて "grpo" または "listwise_dpo" のパイプラインを実行する。
+        2. "grpo" モード:
+           - G 系統のロジット摂動テンソル z^(g) を生成し、無効候補マスクを再適用する。
+           - 厳密適格スコア複合報酬 R_g を算出し、サンプル内標準化アドバンテージ A_g (ゼロ分散ガード付き) を導出する。
+           - 正解ラベル確率比に対するクリップサロゲート損失を計算する。
+        3. "listwise_dpo" モード:
+           - 参照モデルとの暗黙報酬差分から Plackett-Luce ランキング選好損失を計算する。
+        4. 有効候補マスクを考慮した KL ペナルティ D_KL(p_theta || p_ref) およびエントロピーボーナスを加算する。
+        5. config.sft_aux_coeff > 0 の場合、決定境界崩壊を防ぐ補助分類損失を合成する。
 
         Args:
             policy_logits (Tensor): 学習対象ポリシーの未マスクロジット `[batch_size, num_options]`。
@@ -200,6 +308,7 @@ class RLCDLoss(nn.Module):
             labels (Tensor): 正解候補インデックス `[batch_size]`。
             op_mask (Tensor): 有効候補マスク `[batch_size, num_options]`。
             question_types (Sequence[str | QuestionType] | None): サンプルごとの質問タイプ。
+            rankings (Tensor | None): 明示的な選好順序インデックス `[batch_size, num_ranks]`。
 
         Returns:
             tuple[Tensor, dict[str, Tensor]]:
@@ -221,71 +330,98 @@ class RLCDLoss(nn.Module):
             temperature=self.config.sampling_temperature,
         )
 
-        # 2. ロジット摂動サンプリング [B, G, K]
-        perturbed_logits = sample_perturbed_logits(
-            logits=policy_logits,
-            op_mask=op_mask,
-            num_generations=num_gen,
-            perturbation_std=self.config.perturbation_std,
-        )
-
-        # 3. 摂動ロジットの Softmax 確率 [B, G, K]
-        op_mask_gen = op_mask.unsqueeze(1).expand(batch_size, num_gen, num_options)
-        p_gen = get_normalized_probabilities(
-            logits=perturbed_logits.reshape(-1, num_options),
-            op_mask=op_mask_gen.reshape(-1, num_options),
-            temperature=self.config.sampling_temperature,
-        ).reshape(batch_size, num_gen, num_options)
-
-        # 4. 各摂動に対する報酬計算 (B * G を一括計算)
-        flat_logits = perturbed_logits.reshape(-1, num_options)
-        flat_labels = labels.unsqueeze(1).expand(batch_size, num_gen).reshape(-1)
-        flat_mask = op_mask_gen.reshape(-1, num_options)
-
-        flat_q_types: list[str | QuestionType] | None = None
-        if question_types is not None:
-            flat_q_types = []
-            for qt in question_types:
-                flat_q_types.extend([qt] * num_gen)
-
-        reward_dict = compute_composite_scores(
-            logits=flat_logits,
-            labels=flat_labels,
-            op_mask=flat_mask,
-            question_types=flat_q_types,
-            config=self.config.scoring_config,
-        )
-        rewards = reward_dict["composite"].reshape(batch_size, num_gen)
-
-        # 5. グループ内相対アドバンテージ算出
-        advantages, mean_reward, std_reward = compute_group_advantages(rewards)
-
-        # 6. サロゲートポリシー損失の算出 (正解ターゲットの確率比)
         labels_clamped = labels.clamp(min=0, max=num_options - 1)
-        # p_theta(y): [B, 1]
-        p_theta_y = p_theta.gather(dim=-1, index=labels_clamped.unsqueeze(-1))
-        # p_gen(y): [B, G]
-        labels_gen = (
-            labels_clamped.unsqueeze(1).unsqueeze(-1).expand(batch_size, num_gen, 1)
+        p_theta_y = p_theta.gather(dim=-1, index=labels_clamped.unsqueeze(-1)).squeeze(
+            -1
         )
-        p_gen_y = p_gen.gather(dim=-1, index=labels_gen).squeeze(-1)
 
-        # 重要度比 r_g(y) = p_theta(y) / (p_gen(y) + eps)
-        ratio = p_theta_y / (p_gen_y.detach() + 1e-8)
+        metrics: dict[str, Tensor] = {
+            "p_target_mean": p_theta_y.mean().detach(),
+        }
 
-        # クリップ付きサロゲート損失
-        surr1 = ratio * advantages.detach()
-        surr2 = (
-            torch.clamp(
-                ratio,
-                1.0 - self.config.clip_range,
-                1.0 + self.config.clip_range,
+        # 2. 最適化モード別の損失算出
+        if self.config.optimization_mode == "listwise_dpo":
+            loss_main, dpo_metrics = compute_listwise_dpo_loss(
+                policy_logits=policy_logits,
+                ref_logits=ref_logits,
+                labels=labels,
+                op_mask=op_mask,
+                beta=self.config.dpo_beta,
+                temperature=self.config.dpo_temperature,
+                rankings=rankings,
             )
-            * advantages.detach()
-        )
-        loss_policy = -torch.mean(torch.min(surr1, surr2))
+            metrics.update(dpo_metrics)
+            metrics["loss_main"] = loss_main.detach()
+        else:
+            # "grpo" モード: ロジット摂動サンプリング [B, G, K]
+            perturbed_logits = sample_perturbed_logits(
+                logits=policy_logits,
+                op_mask=op_mask,
+                num_generations=num_gen,
+                perturbation_std=self.config.perturbation_std,
+            )
 
-        # 7. パディング考慮型 KL ペナルティ
+            op_mask_gen = op_mask.unsqueeze(1).expand(batch_size, num_gen, num_options)
+            p_gen = get_normalized_probabilities(
+                logits=perturbed_logits.reshape(-1, num_options),
+                op_mask=op_mask_gen.reshape(-1, num_options),
+                temperature=self.config.sampling_temperature,
+            ).reshape(batch_size, num_gen, num_options)
+
+            # 各摂動に対する報酬計算 (B * G を一括計算)
+            flat_logits = perturbed_logits.reshape(-1, num_options)
+            flat_labels = labels.unsqueeze(1).expand(batch_size, num_gen).reshape(-1)
+            flat_mask = op_mask_gen.reshape(-1, num_options)
+
+            flat_q_types: list[str | QuestionType] | None = None
+            if question_types is not None:
+                flat_q_types = []
+                for qt in question_types:
+                    flat_q_types.extend([qt] * num_gen)
+
+            reward_dict = compute_composite_scores(
+                logits=flat_logits,
+                labels=flat_labels,
+                op_mask=flat_mask,
+                question_types=flat_q_types,
+                config=self.config.scoring_config,
+            )
+            rewards = reward_dict["composite"].reshape(batch_size, num_gen)
+
+            # グループ内相対アドバンテージ算出
+            advantages, mean_reward, std_reward = compute_group_advantages(rewards)
+
+            # クリップ付きサロゲート損失の算出 (正解ターゲットの確率比)
+            labels_gen = (
+                labels_clamped.unsqueeze(1).unsqueeze(-1).expand(batch_size, num_gen, 1)
+            )
+            p_gen_y = p_gen.gather(dim=-1, index=labels_gen).squeeze(-1)
+
+            # 重要度比 r_g(y) = p_theta(y) / (p_gen(y) + eps)
+            ratio = p_theta_y.unsqueeze(-1) / (p_gen_y.detach() + 1e-8)
+
+            surr1 = ratio * advantages.detach()
+            surr2 = (
+                torch.clamp(
+                    ratio,
+                    1.0 - self.config.clip_range,
+                    1.0 + self.config.clip_range,
+                )
+                * advantages.detach()
+            )
+            loss_main = -torch.mean(torch.min(surr1, surr2))
+
+            metrics.update(
+                {
+                    "loss_policy": loss_main.detach(),
+                    "loss_main": loss_main.detach(),
+                    "mean_reward": mean_reward.mean().detach(),
+                    "std_reward": std_reward.mean().detach(),
+                    "mean_advantage": advantages.mean().detach(),
+                }
+            )
+
+        # 3. パディング考慮型 KL ペナルティ
         kl_div = compute_masked_kl_divergence(
             p_theta=p_theta,
             p_ref=p_ref.detach(),
@@ -293,26 +429,33 @@ class RLCDLoss(nn.Module):
         )
         loss_kl = torch.mean(kl_div)
 
-        # 8. エントロピーボーナス (過信・モード崩壊防止)
+        # 4. エントロピーボーナス (過信・モード崩壊防止)
         entropy = compute_entropy(probs=p_theta, op_mask=op_mask)
         loss_entropy = -torch.mean(entropy)
 
-        # 9. 総合損失の集約
+        # 5. SFT 補助分類損失 (オプション)
+        loss_sft = torch.tensor(0.0, device=policy_logits.device)
+        if self.config.sft_aux_coeff > 0.0:
+            masked_policy_logits = policy_logits.masked_fill(
+                ~op_mask, DEFAULT_MASK_VALUE
+            )
+            loss_sft = F.cross_entropy(masked_policy_logits, labels_clamped)
+
+        # 6. 総合損失の集約
         total_loss = (
-            loss_policy
+            loss_main
             + self.config.kl_coeff * loss_kl
             + self.config.entropy_coeff * loss_entropy
+            + self.config.sft_aux_coeff * loss_sft
         )
 
-        metrics = {
-            "loss_total": total_loss.detach(),
-            "loss_policy": loss_policy.detach(),
-            "loss_kl": loss_kl.detach(),
-            "loss_entropy": loss_entropy.detach(),
-            "mean_reward": mean_reward.mean().detach(),
-            "std_reward": std_reward.mean().detach(),
-            "mean_advantage": advantages.mean().detach(),
-            "p_target_mean": p_theta_y.mean().detach(),
-        }
+        metrics.update(
+            {
+                "loss_total": total_loss.detach(),
+                "loss_kl": loss_kl.detach(),
+                "loss_entropy": loss_entropy.detach(),
+                "loss_sft_aux": loss_sft.detach(),
+            }
+        )
 
         return total_loss, metrics
