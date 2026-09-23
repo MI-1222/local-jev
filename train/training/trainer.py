@@ -216,7 +216,16 @@ def get_optimizer_grouped_parameters(
 
         is_no_decay = any(nd in name for nd in no_decay)
 
-        if name.startswith(("decision_head", "gather_layer")):
+        if name.startswith(
+            (
+                "decision_head",
+                "choice_head",
+                "score_head",
+                "noul_head",
+                "sab",
+                "gather_layer",
+            )
+        ):
             if is_no_decay:
                 head_no_decay.append(param)
             else:

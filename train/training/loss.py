@@ -211,6 +211,69 @@ class EarthMoverDistanceLoss(nn.Module):
         return loss
 
 
+class RankedProbabilityScoreLoss(nn.Module):
+    """Score (順序尺度) 向け Ranked Probability Score (RPS) 損失層。
+
+    累積分布関数 (CDF) 間の差の二乗平均 (離散型 Wasserstein-1 距離) を計算する。
+    重大インシデントにおける判定逆転 (例: 段階 5 を段階 1 と誤認) を二乗オーダーで強く抑止する。
+
+    数理仕様:
+    予測確率ベクトル $p = \\text{Softmax}(z) \\in \\mathbb{R}^K$、正解 One-hot $q \\in \\mathbb{R}^K$。
+    累積分布関数 $P_m = \\sum_{j=0}^m p_j, \\quad Q_m = \\sum_{j=0}^m q_j \\quad (m = 0, \\dots, K-2)$。
+    $$\\mathcal{L}_{\\text{RPS}} = \\frac{1}{K-1} \\sum_{m=0}^{K-2} (P_m - Q_m)^2$$
+    """
+
+    def __init__(self, eps: float = 1e-8) -> None:
+        """RPS 損失層を初期化する。
+
+        Args:
+            eps (float): 数値安定性のための微小値。
+        """
+        super().__init__()
+        self.eps = eps
+
+    def forward(
+        self,
+        logits_or_probs: Tensor,
+        label: Tensor,
+        is_probs: bool = False,
+    ) -> Tensor:
+        """単一サンプルの有効候補スライスに対する RPS 損失を算出する。
+
+        Args:
+            logits_or_probs (Tensor): ロジットまたは確率テンソル `[num_valid_options]` または `[1, num_valid_options]`。
+            label (Tensor): 正解インデックススカラー。
+            is_probs (bool): 入力がすでに確率分布であるかどうか。
+
+        Returns:
+            Tensor: スカラー損失テンソル。
+        """
+        if logits_or_probs.dim() == 1:
+            logits_or_probs = logits_or_probs.unsqueeze(0)
+        num_classes = logits_or_probs.size(-1)
+        if num_classes <= 1:
+            return torch.tensor(
+                0.0, device=logits_or_probs.device, dtype=logits_or_probs.dtype
+            )
+
+        target_idx = label.view(-1)
+        if is_probs:
+            probs = logits_or_probs
+        else:
+            probs = F.softmax(logits_or_probs, dim=-1)
+
+        target_onehot = F.one_hot(target_idx, num_classes=num_classes).to(
+            logits_or_probs.dtype
+        )
+
+        cdf_pred = torch.cumsum(probs, dim=-1)[:, :-1]
+        cdf_true = torch.cumsum(target_onehot, dim=-1)[:, :-1]
+
+        # 最終ランクを除外した二乗誤差平均
+        rps = torch.sum(torch.pow(cdf_pred - cdf_true, 2), dim=-1) / (num_classes - 1)
+        return rps.mean()
+
+
 class AsymmetricBCELoss(nn.Module):
     """Noul 型向けの非対称重み付き二値クロスエントロピー損失層。
 
@@ -264,6 +327,134 @@ class AsymmetricBCELoss(nn.Module):
             target_float,
             pos_weight=pos_weight_tensor,
         )
+
+
+class AsymmetricLoss(nn.Module):
+    """Noul (真偽判定) 向け非対称損失層 (Asymmetric Loss: ASL)。
+
+    容易な負例をハードマージンで切り捨て、不均衡データでの正例の学習を安定化する。
+
+    数理仕様:
+    $$p = \\sigma(\\Delta z)$$
+    $$p_m = \\max(p - m, 0)$$
+    $$\\mathcal{L}_{\\text{ASL}} = - y (1 - p)^{\\gamma_+} \\ln(p + \\epsilon) - (1 - y) (p_m)^{\\gamma_-} \\ln(1 - p_m + \\epsilon)$$
+    ここで $y \\in \\{0.0, 1.0\\}$ は正例フラグ ($0$ 番目の候補が正解のとき $1.0$)。
+
+    Attributes:
+        gamma_neg (float): 負例の変調指数 $\\gamma_-$ (デフォルト: 4.0)。
+        gamma_pos (float): 正例の変調指数 $\\gamma_+$ (デフォルト: 1.0)。
+        clip_margin (float): 負例のハードマージン $m$ (デフォルト: 0.05)。
+        eps (float): 数値安定化微小値。
+    """
+
+    def __init__(
+        self,
+        gamma_neg: float = 4.0,
+        gamma_pos: float = 1.0,
+        clip_margin: float = 0.05,
+        eps: float = 1e-8,
+    ) -> None:
+        """非対称損失層を初期化する。
+
+        Args:
+            gamma_neg (float): 負例の変調指数。
+            gamma_pos (float): 正例の変調指数。
+            clip_margin (float): 負例のハードマージン。
+            eps (float): 微小値。
+        """
+        super().__init__()
+        self.gamma_neg = gamma_neg
+        self.gamma_pos = gamma_pos
+        self.clip_margin = clip_margin
+        self.eps = eps
+
+    def forward(self, logits: Tensor, label: Tensor) -> Tensor:
+        """2候補スライスに対する非対称損失を算出する。
+
+        Args:
+            logits (Tensor): 2候補のロジット `[2]` または `[1, 2]`。
+            label (Tensor): 正解インデックススカラー (0: True, 1: False)。
+
+        Returns:
+            Tensor: スカラー損失テンソル。
+        """
+        if logits.dim() == 1:
+            logits = logits.unsqueeze(0)
+
+        delta_z = logits[:, 0] - logits[:, 1]
+        target_idx = label.view(-1)
+        target_float = (target_idx == 0).to(logits.dtype)
+
+        probs = torch.sigmoid(delta_z)
+
+        # 正例損失 (Focal 形式)
+        loss_pos = (
+            target_float
+            * torch.log(probs.clamp(min=self.eps))
+            * torch.pow(1.0 - probs, self.gamma_pos)
+        )
+
+        # 負例損失 (マージンシフトによる容易な負例のハードカット)
+        probs_neg = (probs - self.clip_margin).clamp(min=0.0)
+        loss_neg = (
+            (1.0 - target_float)
+            * torch.log((1.0 - probs_neg).clamp(min=self.eps))
+            * torch.pow(probs_neg, self.gamma_neg)
+        )
+
+        return -torch.mean(loss_pos + loss_neg)
+
+
+class SymmetryRegularizationLoss(nn.Module):
+    """候補順序の置換に対する対称性正則化損失層 ($\\mathcal{L}_{\\text{sym}}$)。
+
+    元の入力に対する予測確率分布と、候補順序をシャッフルした入力に対する
+    予測確率分布の置換結果との間の KL ダイバージェンスを計算し、位置バイアスを解消する。
+
+    数理仕様:
+    $$\\mathcal{L}_{\\text{sym}} = D_{\\text{KL}}(\\pi(\\text{Softmax}(z)) \\parallel \\text{Softmax}(z_\\pi))$$
+    """
+
+    def __init__(self, eps: float = 1e-8) -> None:
+        """対称性正則化損失層を初期化する。
+
+        Args:
+            eps (float): 数値安定化微小値。
+        """
+        super().__init__()
+        self.eps = eps
+
+    def forward(
+        self,
+        orig_logits: Tensor,
+        perm_logits: Tensor,
+        perm_indices: Tensor,
+        op_mask: Tensor,
+    ) -> Tensor:
+        """元のロジットと置換ロジット間の対称性 KL 損失を算出する。
+
+        Args:
+            orig_logits (Tensor): 元の順序でのロジット `[batch_size, num_options]`。
+            perm_logits (Tensor): 置換順序でのロジット `[batch_size, num_options]`。
+            perm_indices (Tensor): 置換順序インデックス `[batch_size, num_options]`。
+            op_mask (Tensor): 有効候補マスク `[batch_size, num_options]`。
+
+        Returns:
+            Tensor: スカラー対称性正則化損失。
+        """
+        orig_probs = F.softmax(orig_logits.masked_fill(~op_mask, -1e4), dim=-1)
+        perm_probs = F.softmax(perm_logits.masked_fill(~op_mask, -1e4), dim=-1)
+
+        # orig_probs を perm_indices で並び替えて perm_probs と比較
+        permuted_orig_probs = torch.gather(orig_probs, dim=1, index=perm_indices)
+
+        # 有効要素のみを対象に KL ダイバージェンスを計算
+        kl_div = permuted_orig_probs * (
+            torch.log(permuted_orig_probs.clamp(min=self.eps))
+            - torch.log(perm_probs.clamp(min=self.eps))
+        )
+        masked_kl = kl_div * op_mask.to(kl_div.dtype)
+        return masked_kl.sum(dim=-1).mean()
 
 
 class InfoNCEContrastiveLoss(nn.Module):
@@ -320,16 +511,16 @@ class InfoNCEContrastiveLoss(nn.Module):
 
 
 class JevMultiTaskLoss(nn.Module):
-    """Jev アーキテクチャ用 数理的複合損失エンジン。
+    """Jev アーキテクチャ用 数理的複合損失エンジン (Phase 4 改訂版)。
 
-    Choice (動的平滑化 + Focal), Score (EMD), Noul (非対称 BCE),
+    Choice (動的平滑化 + Focal), Score (RPS / EMD), Noul (ASL / 非対称 BCE),
     および補助対照損失 (InfoNCE) を統合し、異種タスク混在バッチに対して
     サンプル単位で幾何損失を動的ディスパッチして集約する。
 
     Attributes:
         choice_loss_fn (LabelSmoothedFocalLoss): Choice 用損失層。
-        score_loss_fn (EarthMoverDistanceLoss): Score 用損失層。
-        noul_loss_fn (AsymmetricBCELoss): Noul 用損失層。
+        score_loss_fn (nn.Module): Score 用損失層 (RPS または EMD)。
+        noul_loss_fn (nn.Module): Noul 用損失層 (ASL または AsymmetricBCE)。
         contrastive_loss_fn (InfoNCEContrastiveLoss): 補助対照損失層。
         contrastive_weight (float): 対照損失の結合係数 $\\lambda_c$。
         choice_weight (float): Choice 損失の重み係数。
@@ -341,7 +532,9 @@ class JevMultiTaskLoss(nn.Module):
         self,
         label_smoothing: float = 0.05,
         focal_gamma: float = 0.0,
+        score_loss_type: str = "rps",
         score_loss_power: int = 2,
+        noul_loss_type: str = "asl",
         noul_pos_weight: float = 1.0,
         contrastive_weight: float = 0.0,
         contrastive_temperature: float = 0.07,
@@ -354,8 +547,10 @@ class JevMultiTaskLoss(nn.Module):
         Args:
             label_smoothing (float): Choice 型のラベル平滑化係数。
             focal_gamma (float): Choice 型の Focal Loss 変調係数。
+            score_loss_type (str): Score 型損失種別 ('rps' または 'emd')。
             score_loss_power (int): Score 型 EMD 損失のべき数 (1: Smooth L1, 2: 二乗)。
-            noul_pos_weight (float): Noul 型の正例重み係数。
+            noul_loss_type (str): Noul 型損失種別 ('asl' または 'bce')。
+            noul_pos_weight (float): Noul 型 BCE 適用時の正例重み係数。
             contrastive_weight (float): 補助対照損失の重み係数 (0.0 で無効化)。
             contrastive_temperature (float): 補助対照損失の温度パラメータ。
             choice_weight (float): Choice 型損失の重み係数。
@@ -367,8 +562,19 @@ class JevMultiTaskLoss(nn.Module):
             label_smoothing=label_smoothing,
             focal_gamma=focal_gamma,
         )
-        self.score_loss_fn = EarthMoverDistanceLoss(power=score_loss_power)
-        self.noul_loss_fn = AsymmetricBCELoss(pos_weight=noul_pos_weight)
+
+        if score_loss_type.lower() == "emd":
+            self.score_loss_fn: nn.Module = EarthMoverDistanceLoss(
+                power=score_loss_power
+            )
+        else:
+            self.score_loss_fn = RankedProbabilityScoreLoss()
+
+        if noul_loss_type.lower() == "bce":
+            self.noul_loss_fn: nn.Module = AsymmetricBCELoss(pos_weight=noul_pos_weight)
+        else:
+            self.noul_loss_fn = AsymmetricLoss()
+
         self.contrastive_loss_fn = InfoNCEContrastiveLoss(
             temperature=contrastive_temperature
         )
