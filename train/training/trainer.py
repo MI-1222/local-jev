@@ -476,11 +476,14 @@ class SFTTrainer:
             labels = batch["labels"].to(device)
 
             with self.accelerator.accumulate(model):
+                q_types = batch.get("question_types")
                 if self.config.contrastive_weight > 0.0:
                     outputs = model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                         op_indices=op_indices,
+                        op_mask=op_mask,
+                        question_type=q_types,
                         return_features=True,
                     )
                     logits, state_repr, option_vectors = outputs  # type: ignore[misc]
@@ -489,6 +492,8 @@ class SFTTrainer:
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                         op_indices=op_indices,
+                        op_mask=op_mask,
+                        question_type=q_types,
                     )
                     state_repr = None
                     option_vectors = None
@@ -573,10 +578,13 @@ class SFTTrainer:
                 op_mask = batch["op_mask"].to(device)
                 labels = batch["labels"].to(device)
 
+                q_types = batch.get("question_types")
                 logits = model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     op_indices=op_indices,
+                    op_mask=op_mask,
+                    question_type=q_types,
                 )
                 if isinstance(self.loss_fn, JevMultiTaskLoss):
                     loss = self.loss_fn(

@@ -243,5 +243,66 @@ def test_jev_decision_model_forward_and_backward() -> None:
     assert backbone.embeddings.tok_embeddings.weight.grad is not None
 
 
+def test_jev_decision_model_mixed_batch_forward_and_backward() -> None:
+    """混在バッチ (Choice, Score, Noul) に対する JevDecisionModel の計算および勾配伝播を検証する。
+
+    検証項目:
+    - 異なる質問種別が混在するリストが渡された際、形状 `[batch_size, max_options]` でロジットが出力されること。
+    - パディング領域が正しく負の無限大代替値でマスクされること。
+    - バックワード時に ChoiceHead, CoralOrdinalHead, NliNoulHead, SAB の全層に勾配が正常に流れること。
+    """
+    config = AutoConfig.from_pretrained("answerdotai/ModernBERT-base")
+    config.num_hidden_layers = 2
+    config.hidden_size = 64
+    config.intermediate_size = 128
+    config.num_attention_heads = 4
+
+    backbone = AutoModel.from_config(config)
+    model = JevDecisionModel(backbone=backbone, mlp_hidden_size=32)
+
+    batch_size = 3
+    seq_len = 16
+    max_options = 4
+
+    input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
+    attention_mask = torch.ones((batch_size, seq_len), dtype=torch.long)
+    # サンプル0: Choice (4候補), サンプル1: Score (3段階, 4つ目はパディング), サンプル2: Noul (2候補, 3,4つ目はパディング)
+    op_indices = torch.tensor(
+        [
+            [1, 3, 5, 7],
+            [2, 4, 6, -1],
+            [1, 5, -1, -1],
+        ],
+        dtype=torch.long,
+    )
+    op_mask = op_indices != -1
+    question_types = ["choice", "score", "noul"]
+
+    logits = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        op_indices=op_indices,
+        op_mask=op_mask,
+        question_type=question_types,
+    )
+
+    assert logits.shape == (batch_size, max_options)
+
+    # パディング位置のマスク値確認
+    assert logits[1, 3].item() <= -9999.0
+    assert logits[2, 2].item() <= -9999.0
+    assert logits[2, 3].item() <= -9999.0
+
+    # 勾配逆伝播の検証
+    valid_logits_sum = logits[0, :4].sum() + logits[1, :3].sum() + logits[2, :2].sum()
+    valid_logits_sum.backward()
+
+    assert model.choice_head.dense.weight.grad is not None
+    assert model.score_head.feature_proj.weight.grad is not None
+    assert model.noul_head.dense.weight.grad is not None
+    assert model.sab.q_proj.weight.grad is not None
+    assert backbone.embeddings.tok_embeddings.weight.grad is not None
+
+
 if __name__ == "__main__":
     pytest.main([__file__])

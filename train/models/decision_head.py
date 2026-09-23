@@ -459,7 +459,13 @@ class JevDecisionModel(nn.Module):
         attention_mask: Tensor,
         op_indices: Tensor,
         op_mask: Tensor | None = None,
-        question_type: str | QuestionType | None = None,
+        question_type: (
+            str
+            | QuestionType
+            | list[str | QuestionType]
+            | tuple[str | QuestionType, ...]
+            | None
+        ) = None,
         return_features: bool = False,
         return_details: bool = False,
     ) -> Tensor | tuple[Any, ...]:
@@ -508,44 +514,102 @@ class JevDecisionModel(nn.Module):
         ).clamp(min=1e-8)
 
         # タスク種別の判定
-        q_type_str: str | None = None
-        if question_type is not None:
-            q_type_str = (
-                question_type.value
-                if isinstance(question_type, QuestionType)
-                else str(question_type).lower()
-            )
-
         details: dict[str, Any] = {}
 
-        if q_type_str == QuestionType.SCORE.value or q_type_str == "score":
-            num_levels = op_indices.size(1)
-            # 候補の平均表現を集約特徴量とする (有効候補のみで平均)
-            valid_counts = op_mask.sum(dim=1, keepdim=True).clamp(min=1)
-            agg_vector = (
-                sab_option_vectors * op_mask.unsqueeze(-1).to(sab_option_vectors.dtype)
-            ).sum(dim=1) / valid_counts
-
-            probs, logits, cum_probs = self.score_head(agg_vector, num_levels)
-            details["score_probs"] = probs
-            details["cum_probs"] = cum_probs
-        elif q_type_str == QuestionType.NOUL.value or q_type_str == "noul":
-            # Noul では候補ベクトルの先頭差分または集約表現を使用
-            if sab_option_vectors.size(1) >= 2:
-                noul_feat = sab_option_vectors[:, 0] - sab_option_vectors[:, 1]
-            else:
-                noul_feat = state_repr
-
-            logits_2class, p_true, uncertainty, logits_3class = self.noul_head(
-                noul_feat
+        if isinstance(question_type, (list, tuple)):
+            batch_size = input_ids.size(0)
+            max_options = op_indices.size(1)
+            logits = torch.full(
+                (batch_size, max_options),
+                DEFAULT_MASK_VALUE,
+                device=input_ids.device,
+                dtype=sab_option_vectors.dtype,
             )
-            logits = logits_2class
-            details["noul_p_true"] = p_true
-            details["noul_uncertainty"] = uncertainty
-            details["noul_logits_3class"] = logits_3class
+
+            choice_indices: list[int] = []
+            score_indices: list[int] = []
+            noul_indices: list[int] = []
+
+            for idx, q_type in enumerate(question_type):
+                q_str = (
+                    q_type.value
+                    if isinstance(q_type, QuestionType)
+                    else str(q_type).lower()
+                )
+                if q_str in (QuestionType.SCORE.value, "score"):
+                    score_indices.append(idx)
+                elif q_str in (QuestionType.NOUL.value, "noul"):
+                    noul_indices.append(idx)
+                else:
+                    choice_indices.append(idx)
+
+            if choice_indices:
+                idx_tensor = torch.tensor(choice_indices, device=input_ids.device)
+                sub_sab = sab_option_vectors[idx_tensor]
+                sub_mask = op_mask[idx_tensor]
+                sub_logits = self.choice_head(sub_sab, op_mask=sub_mask)
+                logits[idx_tensor] = sub_logits
+
+            if score_indices:
+                for idx in score_indices:
+                    num_levels = int(op_mask[idx].sum().item())
+                    if num_levels < 2:
+                        num_levels = max_options
+                    agg_vec = (
+                        sab_option_vectors[idx]
+                        * op_mask[idx].unsqueeze(-1).to(sab_option_vectors.dtype)
+                    ).sum(dim=0, keepdim=True) / op_mask[idx].sum().clamp(min=1)
+                    _, s_logits, _ = self.score_head(agg_vec, num_levels)
+                    logits[idx, :num_levels] = s_logits[0]
+
+            if noul_indices:
+                for idx in noul_indices:
+                    if op_mask[idx].sum() >= 2:
+                        noul_feat = (
+                            sab_option_vectors[idx, 0] - sab_option_vectors[idx, 1]
+                        ).unsqueeze(0)
+                    else:
+                        noul_feat = state_repr[idx : idx + 1]
+                    n_logits, _, _, _ = self.noul_head(noul_feat)
+                    logits[idx, :2] = n_logits[0]
         else:
-            # デフォルトは Choice
-            logits = self.choice_head(sab_option_vectors, op_mask=op_mask)
+            q_type_str: str | None = None
+            if question_type is not None:
+                q_type_str = (
+                    question_type.value
+                    if isinstance(question_type, QuestionType)
+                    else str(question_type).lower()
+                )
+
+            if q_type_str == QuestionType.SCORE.value or q_type_str == "score":
+                num_levels = op_indices.size(1)
+                # 候補の平均表現を集約特徴量とする (有効候補のみで平均)
+                valid_counts = op_mask.sum(dim=1, keepdim=True).clamp(min=1)
+                agg_vector = (
+                    sab_option_vectors
+                    * op_mask.unsqueeze(-1).to(sab_option_vectors.dtype)
+                ).sum(dim=1) / valid_counts
+
+                probs, logits, cum_probs = self.score_head(agg_vector, num_levels)
+                details["score_probs"] = probs
+                details["cum_probs"] = cum_probs
+            elif q_type_str == QuestionType.NOUL.value or q_type_str == "noul":
+                # Noul では候補ベクトルの先頭差分または集約表現を使用
+                if sab_option_vectors.size(1) >= 2:
+                    noul_feat = sab_option_vectors[:, 0] - sab_option_vectors[:, 1]
+                else:
+                    noul_feat = state_repr
+
+                logits_2class, p_true, uncertainty, logits_3class = self.noul_head(
+                    noul_feat
+                )
+                logits = logits_2class
+                details["noul_p_true"] = p_true
+                details["noul_uncertainty"] = uncertainty
+                details["noul_logits_3class"] = logits_3class
+            else:
+                # デフォルトは Choice
+                logits = self.choice_head(sab_option_vectors, op_mask=op_mask)
 
         if return_details:
             return logits, state_repr, sab_option_vectors, details
