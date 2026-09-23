@@ -1,0 +1,625 @@
+{
+  "version": "1.0",
+  "description": "Python Reference vs Rust local-jev-server E2E Parity Fixtures",
+  "generated_with": "sbintuitions/modernbert-ja-130m + models/default/model.onnx",
+  "num_cases": 11,
+  "cases": [
+    {
+      "id": "choice_k2_sentiment",
+      "state": "商品が翌日午前中に届き、梱包も丁寧で大変満足しています。",
+      "questions": {
+        "sentiment": {
+          "type": "choice",
+          "instructions": "レビューの感情極性を選択せよ。",
+          "criteria": {
+            "negative": "否定的な評価や不満の表明",
+            "positive": "肯定的な評価や満足の表明"
+          }
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "sentiment": {
+            "choice": "positive",
+            "score": null,
+            "noul": null,
+            "probabilities": {
+              "negative": 2.6125561565678716e-06,
+              "positive": 0.9999973874438435
+            },
+            "confidence": 0.999942553298892,
+            "logits": [
+              -10.229829788208008,
+              2.6253490447998047
+            ],
+            "temperature": 1.0,
+            "gating": {
+              "route": "auto_execute",
+              "confidence": 0.999942553298892,
+              "normalized_entropy": 5.22218616599834e-05,
+              "top_margin": 0.999994774887687,
+              "degradation_reason": null
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "auto_execute"
+        }
+      }
+    },
+    {
+      "id": "choice_k3_intent",
+      "state": "先週注文した商品の配送状況を確認したいです。注文番号はORD-12345です。",
+      "questions": {
+        "intent": {
+          "type": "choice",
+          "instructions": "顧客の問い合わせ意図を分類せよ。",
+          "criteria": {
+            "refund": "注文キャンセルや返金の要求",
+            "shipping": "配送状況や配達予定日の確認",
+            "specs": "商品の機能や仕様に関する問い合わせ"
+          }
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "intent": {
+            "choice": "shipping",
+            "score": null,
+            "noul": null,
+            "probabilities": {
+              "refund": 0.006861083955772642,
+              "shipping": 0.9497244224364955,
+              "specs": 0.043414493607731926
+            },
+            "confidence": 0.7253462871569217,
+            "logits": [
+              -8.409632682800293,
+              7.9037652015686035,
+              -2.3051352500915527
+            ],
+            "temperature": 3.3088,
+            "gating": {
+              "route": "auto_execute",
+              "confidence": 0.7253462871569217,
+              "normalized_entropy": 0.19967081449245902,
+              "top_margin": 0.9063099288287635,
+              "degradation_reason": null
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "auto_execute"
+        }
+      }
+    },
+    {
+      "id": "score_m5_satisfaction",
+      "state": "サポート窓口の対応が迅速で、問題がすぐに解決しました。",
+      "questions": {
+        "satisfaction_level": {
+          "type": "score",
+          "instructions": "サポート対応の満足度を1から5で評価せよ。",
+          "criteria": [
+            "非常に不満",
+            "不満",
+            "普通",
+            "満足",
+            "大変満足"
+          ]
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "satisfaction_level": {
+            "choice": null,
+            "score": 3.01972831093276,
+            "noul": null,
+            "probabilities": {
+              "非常に不満": 0.03153971202548578,
+              "不満": 0.03101351553180678,
+              "普通": 0.14836701172028519,
+              "満足": 0.4643382709293061,
+              "大変満足": 0.32474148979311623
+            },
+            "confidence": 0.7798423085955648,
+            "logits": [
+              -10.178043365478516,
+              -10.229870796203613,
+              -5.408069133758545,
+              -1.8934518098831177,
+              -2.9949889183044434
+            ],
+            "temperature": 3.0805,
+            "gating": {
+              "route": "confirm_or_escalate",
+              "confidence": 0.7798423085955648,
+              "normalized_entropy": 0.7588302080511545,
+              "top_margin": 0.13959678113618984,
+              "degradation_reason": "確信度は十分ですが (0.7798 >= 0.70)、上位候補の確率差が小さいため確認を要求します (0.1396 < 0.15)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "confirm_or_escalate"
+        }
+      }
+    },
+    {
+      "id": "score_m3_urgency",
+      "state": "サーバーがダウンしており、業務が完全に停止しています。至急復旧してください。",
+      "questions": {
+        "urgency": {
+          "type": "score",
+          "instructions": "インシデントの緊急度を評価せよ。",
+          "criteria": [
+            "低 (業務影響なし)",
+            "中 (一部業務に遅延)",
+            "高 (全社業務停止)"
+          ]
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "urgency": {
+            "choice": null,
+            "score": 0.7790723848117072,
+            "noul": null,
+            "probabilities": {
+              "低 (業務影響なし)": 0.4363185565278611,
+              "中 (一部業務に遅延)": 0.3482905021325704,
+              "高 (全社業務停止)": 0.21539094133956835
+            },
+            "confidence": 0.397099513285357,
+            "logits": [
+              -7.393917560577393,
+              -8.088064193725586,
+              -9.568497657775879
+            ],
+            "temperature": 3.0805,
+            "gating": {
+              "route": "confirm_or_escalate",
+              "confidence": 0.397099513285357,
+              "normalized_entropy": 0.9647746395064853,
+              "top_margin": 0.08802805439529071,
+              "degradation_reason": "確信度が中程度であるため確認を要求します (0.35 <= 0.3971 < 0.70)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "confirm_or_escalate"
+        }
+      }
+    },
+    {
+      "id": "noul_statement_verification",
+      "state": "契約第3条に基づき、解約手続きは月末の10日前までに申請する必要があります。",
+      "questions": {
+        "can_cancel_anytime": {
+          "type": "noul",
+          "instructions": "言明「利用者はいつでも即座にペナルティなしで解約できる」の真偽を判定せよ。"
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "can_cancel_anytime": {
+            "choice": null,
+            "score": null,
+            "noul": 0.7171473343434518,
+            "probabilities": null,
+            "confidence": null,
+            "logits": [
+              -10.249828338623047,
+              -12.923296928405762
+            ],
+            "temperature": 2.8736,
+            "gating": {
+              "route": "confirm_or_escalate",
+              "confidence": 0.4342946686869036,
+              "normalized_entropy": null,
+              "top_margin": null,
+              "degradation_reason": "確信度が中程度であるため確認を要求します (0.35 <= 0.4343 < 0.70)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "confirm_or_escalate"
+        }
+      }
+    },
+    {
+      "id": "scenario_ec_hardware_defect",
+      "state": "昨日届いたキーボードのBluetoothが途切れて全く接続できません。交換できますか？",
+      "questions": {
+        "department": {
+          "type": "choice",
+          "instructions": "最適な担当部署を分類せよ。",
+          "criteria": {
+            "billing": "請求・クレジットカード決済窓口",
+            "general": "その他一般的な問い合わせ",
+            "shipping": "配送先変更および追跡調査",
+            "tech_support": "製品初期不良・ハードウェアトラブル対応"
+          }
+        },
+        "is_hardware_defect": {
+          "type": "noul",
+          "instructions": "言明「ハードウェア初期不良の可能性が高い」の真偽を判定せよ。"
+        },
+        "urgency_score": {
+          "type": "score",
+          "instructions": "対応の緊急度を1から5で判定せよ。",
+          "criteria": [
+            "緊急度1: 軽微な質問",
+            "緊急度2: 急ぎではない確認",
+            "緊急度3: 通常の対応要求",
+            "緊急度4: 早期対応が望ましい",
+            "緊急度5: 即時対応必須の重大インシデント"
+          ]
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "department": {
+            "choice": "tech_support",
+            "score": null,
+            "noul": null,
+            "probabilities": {
+              "billing": 0.007131793970208656,
+              "general": 0.021609984442991493,
+              "shipping": 0.031517612757261136,
+              "tech_support": 0.9397406088295387
+            },
+            "confidence": 0.7211867206591639,
+            "logits": [
+              -9.688992500305176,
+              -6.020881175994873,
+              -4.772169589996338,
+              6.461396217346191
+            ],
+            "temperature": 3.3088,
+            "gating": {
+              "route": "auto_execute",
+              "confidence": 0.7211867206591639,
+              "normalized_entropy": 0.20593651143163638,
+              "top_margin": 0.9082229960722775,
+              "degradation_reason": null
+            }
+          },
+          "is_hardware_defect": {
+            "choice": null,
+            "score": null,
+            "noul": 0.008965395281782937,
+            "probabilities": null,
+            "confidence": null,
+            "logits": [
+              -11.854544639587402,
+              1.6668274402618408
+            ],
+            "temperature": 2.8736,
+            "gating": {
+              "route": "auto_execute",
+              "confidence": 0.9820692094364342,
+              "normalized_entropy": null,
+              "top_margin": null,
+              "degradation_reason": null
+            }
+          },
+          "urgency_score": {
+            "choice": null,
+            "score": 1.5263975947158237,
+            "noul": null,
+            "probabilities": {
+              "緊急度1: 軽微な質問": 0.19548362463445848,
+              "緊急度2: 急ぎではない確認": 0.35451927727450644,
+              "緊急度3: 通常の対応要求": 0.2559907672096276,
+              "緊急度4: 早期対応が望ましい": 0.11612854050356856,
+              "緊急度5: 即時対応必須の重大インシデント": 0.07787779037783908
+            },
+            "confidence": 0.6650514401159231,
+            "logits": [
+              -5.866491317749023,
+              -4.032712459564209,
+              -5.0357890129089355,
+              -7.47075080871582,
+              -8.70158576965332
+            ],
+            "temperature": 3.0805,
+            "gating": {
+              "route": "confirm_or_escalate",
+              "confidence": 0.6650514401159231,
+              "normalized_entropy": 0.9222832258346757,
+              "top_margin": 0.09852851006487884,
+              "degradation_reason": "確信度が中程度であるため確認を要求します (0.35 <= 0.6651 < 0.70)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "confirm_or_escalate"
+        }
+      }
+    },
+    {
+      "id": "scenario_payment_incident_e403",
+      "state": "カード決済でエラーコード E-403 が発生しました。",
+      "questions": {
+        "action": {
+          "type": "choice",
+          "instructions": "推奨される初期対応アクションを選択せよ。",
+          "criteria": {
+            "cancel": "注文の強制キャンセル",
+            "contact_support": "カスタマーサポートへのエスカレーション",
+            "reauth": "カード会社への再認証要求",
+            "retry": "別決済手段への切り替え案内"
+          }
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "action": {
+            "choice": "reauth",
+            "score": null,
+            "noul": null,
+            "probabilities": {
+              "cancel": 0.2502073427359381,
+              "contact_support": 0.19645848964564747,
+              "reauth": 0.4590499830712551,
+              "retry": 0.09428418454715926
+            },
+            "confidence": 0.02107294131004957,
+            "logits": [
+              -1.3392462730407715,
+              -2.1394424438476562,
+              0.6687623858451843,
+              -4.568557262420654
+            ],
+            "temperature": 3.3088,
+            "gating": {
+              "route": "fallback",
+              "confidence": 0.02107294131004957,
+              "normalized_entropy": 0.8990965576942768,
+              "top_margin": 0.20884264033531702,
+              "degradation_reason": "確信度が低いため安全弁フォールバックを発動します (0.0211 < 0.35)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "fallback"
+        }
+      }
+    },
+    {
+      "id": "scenario_fraud_detection_vip",
+      "state": "高額VIP注文（過去利用実績10年以上、IPリスクスコア低、配送先一致）。",
+      "questions": {
+        "fraud_risk": {
+          "type": "noul",
+          "instructions": "言明「不正注文のリスクが高い」の真偽を判定せよ。"
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "fraud_risk": {
+            "choice": null,
+            "score": null,
+            "noul": 0.20592570854197725,
+            "probabilities": null,
+            "confidence": null,
+            "logits": [
+              -8.602165222167969,
+              -4.723777770996094
+            ],
+            "temperature": 2.8736,
+            "gating": {
+              "route": "confirm_or_escalate",
+              "confidence": 0.5881485829160455,
+              "normalized_entropy": null,
+              "top_margin": null,
+              "degradation_reason": "確信度が中程度であるため確認を要求します (0.35 <= 0.5881 < 0.70)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "confirm_or_escalate"
+        }
+      }
+    },
+    {
+      "id": "gating_boundary_forced_auto",
+      "state": "新規契約の申込みを行います。プランはスタンダードでお願いします。",
+      "questions": {
+        "plan": {
+          "type": "choice",
+          "instructions": "希望プランを選択せよ。",
+          "criteria": {
+            "enterprise": "大規模エンタープライズプラン",
+            "free": "無料フリープラン",
+            "standard": "標準スタンダードプラン"
+          }
+        }
+      },
+      "gating_config": {
+        "enabled": true,
+        "high_threshold": 0.001,
+        "low_threshold": 0.0005,
+        "top_margin_threshold": 0.0001
+      },
+      "expected": {
+        "answers": {
+          "plan": {
+            "choice": "standard",
+            "score": null,
+            "noul": null,
+            "probabilities": {
+              "enterprise": 0.005811614875055942,
+              "free": 0.015615770359612821,
+              "standard": 0.9785726147653312
+            },
+            "confidence": 0.8612215435183906,
+            "logits": [
+              -9.530879974365234,
+              -6.2603864669799805,
+              7.430811405181885
+            ],
+            "temperature": 3.3088,
+            "gating": {
+              "route": "auto_execute",
+              "confidence": 0.8612215435183906,
+              "normalized_entropy": 0.10564886835620645,
+              "top_margin": 0.9629568444057184,
+              "degradation_reason": null
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "auto_execute"
+        }
+      }
+    },
+    {
+      "id": "gating_boundary_forced_fallback",
+      "state": "何が言いたいのかよくわからない曖昧なテキストです。",
+      "questions": {
+        "ambiguity": {
+          "type": "choice",
+          "instructions": "分類せよ。",
+          "criteria": {
+            "opt1": "選択肢 1",
+            "opt2": "選択肢 2",
+            "opt3": "選択肢 3"
+          }
+        }
+      },
+      "gating_config": {
+        "enabled": true,
+        "high_threshold": 0.9999,
+        "low_threshold": 0.9998,
+        "top_margin_threshold": 0.5
+      },
+      "expected": {
+        "answers": {
+          "ambiguity": {
+            "choice": "opt2",
+            "score": null,
+            "noul": null,
+            "probabilities": {
+              "opt1": 0.28356604244601646,
+              "opt2": 0.5191253685835948,
+              "opt3": 0.1973085889703888
+            },
+            "confidence": 0.017294365439368967,
+            "logits": [
+              -8.266594886779785,
+              -6.2657623291015625,
+              -9.466617584228516
+            ],
+            "temperature": 3.3088,
+            "gating": {
+              "route": "fallback",
+              "confidence": 0.017294365439368967,
+              "normalized_entropy": 0.9265816992986803,
+              "top_margin": 0.23555932613757835,
+              "degradation_reason": "確信度が低いため安全弁フォールバックを発動します (0.0173 < 1.00)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "fallback"
+        }
+      }
+    },
+    {
+      "id": "choice_k16_large_scale",
+      "state": "東京都千代田区で発生した交通障害に関する報道です。",
+      "questions": {
+        "prefecture": {
+          "type": "choice",
+          "instructions": "都道府県・地域を分類せよ。",
+          "criteria": {
+            "area_01": "地域分類コード 01",
+            "area_02": "地域分類コード 02",
+            "area_03": "地域分類コード 03",
+            "area_04": "地域分類コード 04",
+            "area_05": "地域分類コード 05",
+            "area_06": "地域分類コード 06",
+            "area_07": "地域分類コード 07",
+            "area_08": "地域分類コード 08",
+            "area_09": "地域分類コード 09",
+            "area_10": "地域分類コード 10",
+            "area_11": "地域分類コード 11",
+            "area_12": "地域分類コード 12",
+            "area_13": "地域分類コード 13",
+            "area_14": "地域分類コード 14",
+            "area_15": "地域分類コード 15",
+            "area_16": "地域分類コード 16"
+          }
+        }
+      },
+      "gating_config": null,
+      "expected": {
+        "answers": {
+          "prefecture": {
+            "choice": "area_04",
+            "score": null,
+            "noul": null,
+            "probabilities": {
+              "area_01": 0.10751986321513096,
+              "area_02": 0.12497636420359065,
+              "area_03": 0.13644051529752244,
+              "area_04": 0.21802580700164198,
+              "area_05": 0.1377961068708497,
+              "area_06": 0.05953046616712189,
+              "area_07": 0.02982503403083663,
+              "area_08": 0.020609279698529746,
+              "area_09": 0.019690581544521062,
+              "area_10": 0.02313353462679946,
+              "area_11": 0.023175960327492782,
+              "area_12": 0.022067120772337974,
+              "area_13": 0.019973815703946213,
+              "area_14": 0.022783669726624135,
+              "area_15": 0.021300562076710248,
+              "area_16": 0.013151318736344278
+            },
+            "confidence": 0.011692736872230469,
+            "logits": [
+              -5.4582905769348145,
+              -5.163229942321777,
+              -4.991106986999512,
+              -4.071844100952148,
+              -4.971717834472656,
+              -6.617727279663086,
+              -7.973191261291504,
+              -8.698063850402832,
+              -8.787496566772461,
+              -8.471463203430176,
+              -8.467869758605957,
+              -8.564021110534668,
+              -8.75948715209961,
+              -8.501350402832031,
+              -8.633359909057617,
+              -9.579072952270508
+            ],
+            "temperature": 1.9612,
+            "gating": {
+              "route": "fallback",
+              "confidence": 0.011692736872230469,
+              "normalized_entropy": 0.8542592474710898,
+              "top_margin": 0.08022970013079228,
+              "degradation_reason": "確信度が低いため安全弁フォールバックを発動します (0.0117 < 0.35)。"
+            }
+          }
+        },
+        "routing": {
+          "aggregate_route": "fallback"
+        }
+      }
+    }
+  ]
+}
