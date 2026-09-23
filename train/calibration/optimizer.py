@@ -27,11 +27,13 @@ from calibration.config import (
     CalibrationRunConfig,
     matches_bucket_expr,
 )
+from calibration.diagram import export_all_diagrams
 from calibration.evaluator import (
     CalibrationEvaluator,
     compute_accuracy,
     compute_masked_nll,
 )
+from calibration.reporter import CalibrationReporter
 from contract import CalibrationConfig, TemperatureMap
 from data.schema import QuestionType
 
@@ -490,16 +492,66 @@ class TemperatureOptimizer:
         total_post_ece = 0.0
         total_pre_nll = 0.0
         total_post_nll = 0.0
+        total_pre_brier = 0.0
+        total_post_brier = 0.0
+        total_pre_acc = 0.0
+        total_post_acc = 0.0
         total_eval_samples = 0
+
+        # 全体ダイアグラム用のビン加重集計 (10 ビン)
+        num_bins = self.config.num_bins
+        overall_pre_bins: list[dict[str, Any]] = [
+            {
+                "bin_index": i,
+                "bin_lower": round(i / num_bins, 3),
+                "bin_upper": round((i + 1) / num_bins, 3),
+                "count": 0,
+                "confidence": round((i + 0.5) / num_bins, 4),
+                "accuracy": 0.0,
+                "gap": round(abs(0.0 - round((i + 0.5) / num_bins, 4)), 4),
+            }
+            for i in range(num_bins)
+        ]
+        overall_post_bins = [dict(b) for b in overall_pre_bins]
 
         for m in bucket_metrics.values():
             s = m["samples"]
             if s > 0:
-                total_pre_ece += m["pre_calibration"]["ece"] * s
-                total_post_ece += m["post_calibration"]["ece"] * s
-                total_pre_nll += m["pre_calibration"]["nll"] * s
-                total_post_nll += m["post_calibration"]["nll"] * s
+                pre_e = m["pre_calibration"]
+                post_e = m["post_calibration"]
+                total_pre_ece += pre_e.get("ece", 0.0) * s
+                total_post_ece += post_e.get("ece", 0.0) * s
+                total_pre_nll += pre_e.get("nll", 0.0) * s
+                total_post_nll += post_e.get("nll", 0.0) * s
+                total_pre_brier += pre_e.get("brier_score", 0.0) * s
+                total_post_brier += post_e.get("brier_score", 0.0) * s
+                total_pre_acc += pre_e.get("accuracy", 0.0) * s
+                total_post_acc += post_e.get("accuracy", 0.0) * s
                 total_eval_samples += s
+
+                # 各ビンの統計量を加重合成
+                for src_bins, tgt_bins in [
+                    (pre_e.get("reliability_diagram", []), overall_pre_bins),
+                    (post_e.get("reliability_diagram", []), overall_post_bins),
+                ]:
+                    for b_src in src_bins:
+                        idx = b_src["bin_index"]
+                        cnt = b_src["count"]
+                        if cnt > 0 and idx < num_bins:
+                            prev_cnt = tgt_bins[idx]["count"]
+                            new_cnt = prev_cnt + cnt
+                            prev_acc = tgt_bins[idx]["accuracy"]
+                            prev_conf = tgt_bins[idx]["confidence"]
+                            new_acc = (
+                                prev_acc * prev_cnt + b_src["accuracy"] * cnt
+                            ) / new_cnt
+                            new_conf = (
+                                prev_conf * prev_cnt + b_src["confidence"] * cnt
+                            ) / new_cnt
+                            tgt_bins[idx]["count"] = new_cnt
+                            tgt_bins[idx]["accuracy"] = round(new_acc, 4)
+                            tgt_bins[idx]["confidence"] = round(new_conf, 4)
+                            tgt_bins[idx]["gap"] = round(abs(new_acc - new_conf), 4)
 
         overall_pre_ece = (
             round(total_pre_ece / total_eval_samples, 4)
@@ -521,16 +573,55 @@ class TemperatureOptimizer:
             if total_eval_samples > 0
             else 0.0
         )
+        overall_pre_brier = (
+            round(total_pre_brier / total_eval_samples, 4)
+            if total_eval_samples > 0
+            else 0.0
+        )
+        overall_post_brier = (
+            round(total_post_brier / total_eval_samples, 4)
+            if total_eval_samples > 0
+            else 0.0
+        )
+        overall_pre_acc = (
+            round(total_pre_acc / total_eval_samples, 4)
+            if total_eval_samples > 0
+            else 0.0
+        )
+        overall_post_acc = (
+            round(total_post_acc / total_eval_samples, 4)
+            if total_eval_samples > 0
+            else 0.0
+        )
+
+        # 確信度 0.8 ウィンドウ ([0.75, 0.85]) の加重合成
+        acc_08_bin = overall_post_bins[int(0.8 * num_bins)] if num_bins > 0 else {}
+        cnt_08 = acc_08_bin.get("count", 0)
+        acc_08 = acc_08_bin.get("accuracy", 0.0)
+        overall_acc_08 = {
+            "target_conf": 0.8,
+            "window": 0.05,
+            "count": cnt_08,
+            "accuracy": acc_08,
+            "in_target_range": bool(0.78 <= acc_08 <= 0.82),
+        }
 
         overall_summary = {
             "total_samples": total_eval_samples,
             "pre_calibration": {
                 "ece": overall_pre_ece,
                 "nll": overall_pre_nll,
+                "brier_score": overall_pre_brier,
+                "accuracy": overall_pre_acc,
+                "reliability_diagram": overall_pre_bins,
             },
             "post_calibration": {
                 "ece": overall_post_ece,
                 "nll": overall_post_nll,
+                "brier_score": overall_post_brier,
+                "accuracy": overall_post_acc,
+                "reliability_diagram": overall_post_bins,
+                "accuracy_at_08": overall_acc_08,
             },
             "ece_improvement": round(overall_pre_ece - overall_post_ece, 4),
             "target_ece_met": bool(overall_post_ece < 0.10),
@@ -565,6 +656,8 @@ class TemperatureOptimizer:
         3. calibration_metrics.json (最適化前後の性能メトリクス)
         4. run_metadata.json (環境情報・Git 情報)
         5. summary.md (人間向け確認レポート)
+        6. plots/ (信頼性ダイアグラム画像 PNG / SVG)
+        7. calibration_report.json / calibration_report.md (Phase 4 Exit Criteria 判定レポート)
 
         Args:
             output_dir (Path | str): 保存先ディレクトリ。
@@ -577,6 +670,7 @@ class TemperatureOptimizer:
         """
         run_path = Path(output_dir)
         run_path.mkdir(parents=True, exist_ok=True)
+        plots_dir = run_path / "plots"
 
         # 1. calibration.json
         calib_config.save(run_path / "calibration.json")
@@ -602,6 +696,17 @@ class TemperatureOptimizer:
         # 5. summary.md
         summary_md = self._generate_summary_markdown(calib_config, metrics_summary)
         (run_path / "summary.md").write_text(summary_md, encoding="utf-8")
+
+        # 6. 信頼性ダイアグラム画像の描画・保存
+        try:
+            diagram_files = export_all_diagrams(metrics_summary, plots_dir)
+        except (RuntimeError, ValueError, OSError, TypeError) as e:
+            logger.warning("ダイアグラム描画中に警告が発生しました: %s.", e)
+            diagram_files = {}
+
+        # 7. Exit Criteria 判定 & 総合レポート生成
+        reporter = CalibrationReporter(run_path)
+        reporter.generate_report(metrics_summary, diagram_paths=diagram_files)
 
         logger.info("キャリブレーション成果物を保存しました: %s.", run_path)
         return run_path
