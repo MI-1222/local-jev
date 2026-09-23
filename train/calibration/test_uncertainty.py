@@ -29,8 +29,8 @@ from contract import (
 
 def test_contract_constants() -> None:
     """不確実性・ゲーティング契約定数のデフォルト値を検証する。"""
-    assert DEFAULT_HIGH_CONFIDENCE_THRESHOLD == 0.85
-    assert DEFAULT_LOW_CONFIDENCE_THRESHOLD == 0.50
+    assert DEFAULT_HIGH_CONFIDENCE_THRESHOLD == 0.70
+    assert DEFAULT_LOW_CONFIDENCE_THRESHOLD == 0.35
     assert DEFAULT_TOP_MARGIN_THRESHOLD == 0.15
 
 

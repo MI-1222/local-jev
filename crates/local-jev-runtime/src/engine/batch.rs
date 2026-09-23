@@ -6,12 +6,14 @@
 use indexmap::IndexMap;
 use local_jev_core::contract::CalibrationConfig;
 use local_jev_core::decision::evaluate_question_with_buf;
+use local_jev_core::gating::GatingConfig;
 use local_jev_core::schema::{Answer, Question, QuestionType};
 
 use crate::engine::coarse::{
     CoarseScorer, CoarseToFineConfig, LexicalCoarseScorer, filter_top_candidates,
     reconstruct_probabilities,
 };
+use crate::engine::gating::apply_gating_to_answer;
 use crate::engine::session::InferenceEngine;
 use crate::error::Result;
 use crate::tokenizer::{BatchTokenizedQuestions, JevTokenizer};
@@ -140,6 +142,7 @@ impl InferenceEngine {
     /// 2. `forward_batch_tokenized_into` による単一フォワードパス実行。
     /// 3. 各質問の真の候補数 $K_i$ によるスライス抽出とダミーロジット破棄。
     /// 4. `local_jev_core::decision::evaluate_question_with_buf` による決定論的プリミティブ解決。
+    /// 5. 較正設定の閾値に基づき、透過的に確信度ゲーティングを適用して返却。
     ///
     /// # 引数
     /// - `tokenizer`: Jev 高速トークナイザー。
@@ -155,6 +158,25 @@ impl InferenceEngine {
         state: &str,
         questions: &IndexMap<String, Question>,
         calib_config: &CalibrationConfig,
+    ) -> Result<IndexMap<String, Answer>> {
+        self.evaluate_batch_questions_with_gating(tokenizer, state, questions, calib_config, None)
+    }
+
+    /// ゲーティング設定を明示指定して、複数質問一括バッチ推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問識別子と質問定義のマップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `gating_config`: 明示的なゲーティング設定 (任意、未指定時は較正設定から導出)。
+    pub fn evaluate_batch_questions_with_gating(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        gating_config: Option<&GatingConfig>,
     ) -> Result<IndexMap<String, Answer>> {
         let batch = tokenizer.encode_batch_questions(state, questions)?;
         let total_logits = batch.dims.batch_size * batch.dims.num_options;
@@ -172,12 +194,19 @@ impl InferenceEngine {
             let valid_logits = &flat_logits[start_idx..start_idx + k_i];
             let question = questions.get(q_key).expect("キーの一致が保証されている。");
 
-            let answer = evaluate_question_with_buf(
+            let mut answer = evaluate_question_with_buf(
                 question,
                 valid_logits,
                 calib_config,
                 &mut probs_buf[..k_i],
             )?;
+            apply_gating_to_answer(
+                &mut answer,
+                Some(q_key),
+                Some(question),
+                gating_config,
+                calib_config,
+            );
             answers.insert(q_key.clone(), answer);
         }
 
@@ -202,6 +231,34 @@ impl InferenceEngine {
         calib_config: &CalibrationConfig,
         scratchpad: &mut BatchScratchpad,
     ) -> Result<IndexMap<String, Answer>> {
+        self.evaluate_batch_questions_with_scratchpad_and_gating(
+            tokenizer,
+            state,
+            questions,
+            calib_config,
+            None,
+            scratchpad,
+        )
+    }
+
+    /// スクラッチパッドバッファとゲーティング設定を指定してバッチ推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問識別子と質問定義のマップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `gating_config`: 明示的なゲーティング設定 (任意)。
+    /// - `scratchpad`: 再利用可能な作業用スクラッチパッドバッファ。
+    pub fn evaluate_batch_questions_with_scratchpad_and_gating(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        gating_config: Option<&GatingConfig>,
+        scratchpad: &mut BatchScratchpad,
+    ) -> Result<IndexMap<String, Answer>> {
         let batch = tokenizer.encode_batch_questions(state, questions)?;
         let total_logits = batch.dims.batch_size * batch.dims.num_options;
         let num_options = batch.dims.num_options;
@@ -218,12 +275,19 @@ impl InferenceEngine {
             let valid_logits = &scratchpad.flat_logits[start_idx..start_idx + k_i];
             let question = questions.get(q_key).expect("キーの一致が保証されている。");
 
-            let answer = evaluate_question_with_buf(
+            let mut answer = evaluate_question_with_buf(
                 question,
                 valid_logits,
                 calib_config,
                 &mut scratchpad.probs_buf[..k_i],
             )?;
+            apply_gating_to_answer(
+                &mut answer,
+                Some(q_key),
+                Some(question),
+                gating_config,
+                calib_config,
+            );
             answers.insert(q_key.clone(), answer);
         }
 
@@ -276,7 +340,7 @@ impl InferenceEngine {
     /// 共通 State と複数質問群を指定されたチャンクサイズで分割実行し、判定結果を一括導出する。
     ///
     /// サーバー層 (local-jev-server) のガードレール等と連携し、大規模質問リクエストを
-    /// 安全な固定バッチサイズで順次推論・解決する。
+    /// 安全な固定バッチサイズで順次推論・解決する。較正設定の閾値に基づき、各質問に透過的にゲーティングを適用する。
     ///
     /// # 引数
     /// - `tokenizer`: Jev 高速トークナイザー。
@@ -292,9 +356,43 @@ impl InferenceEngine {
         calib_config: &CalibrationConfig,
         chunk_size: usize,
     ) -> Result<IndexMap<String, Answer>> {
+        self.evaluate_batch_questions_chunked_with_gating(
+            tokenizer,
+            state,
+            questions,
+            calib_config,
+            chunk_size,
+            None,
+        )
+    }
+
+    /// チャンク分割およびゲーティング設定を指定してバッチ推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問識別子と質問定義のマップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `chunk_size`: 1 回のフォワードパスで処理する最大質問数。
+    /// - `gating_config`: 明示的なゲーティング設定 (任意)。
+    pub fn evaluate_batch_questions_chunked_with_gating(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        chunk_size: usize,
+        gating_config: Option<&GatingConfig>,
+    ) -> Result<IndexMap<String, Answer>> {
         let chunk_size = chunk_size.max(1);
         if questions.len() <= chunk_size {
-            return self.evaluate_batch_questions(tokenizer, state, questions, calib_config);
+            return self.evaluate_batch_questions_with_gating(
+                tokenizer,
+                state,
+                questions,
+                calib_config,
+                gating_config,
+            );
         }
 
         let state_ids = tokenizer.encode_state(state)?;
@@ -327,12 +425,19 @@ impl InferenceEngine {
                     .get(q_key)
                     .expect("キーの一致が保証されている。");
 
-                let answer = evaluate_question_with_buf(
+                let mut answer = evaluate_question_with_buf(
                     question,
                     valid_logits,
                     calib_config,
                     &mut probs_buf[..k_i],
                 )?;
+                apply_gating_to_answer(
+                    &mut answer,
+                    Some(q_key),
+                    Some(question),
+                    gating_config,
+                    calib_config,
+                );
                 answers.insert(q_key.clone(), answer);
             }
         }
@@ -408,13 +513,15 @@ impl InferenceEngine {
         let mut answers =
             self.evaluate_batch_questions(tokenizer, state, &processed_questions, calib_config)?;
 
-        // スクリーニングされた質問の確率マップを全候補空間に復元
+        // スクリーニングされた質問の確率マップを全候補空間に復元し、ゲーティングを再適用
         for (q_key, original_keys) in &original_keys_map {
             if let Some(answer) = answers.get_mut(q_key)
                 && let Some(ref sub_probs) = answer.probabilities
             {
                 let full_probs = reconstruct_probabilities(original_keys, sub_probs);
                 answer.probabilities = Some(full_probs);
+                let orig_q = questions.get(q_key);
+                apply_gating_to_answer(answer, Some(q_key), orig_q, None, calib_config);
             }
         }
 
@@ -470,6 +577,43 @@ impl InferenceEngine {
         calib_config: &CalibrationConfig,
         coarse_config: &CoarseToFineConfig,
         chunk_size: usize,
+        scorer: &S,
+    ) -> Result<IndexMap<String, Answer>> {
+        self.evaluate_batch_questions_coarse_to_fine_chunked_with_gating_and_scorer(
+            tokenizer,
+            state,
+            questions,
+            calib_config,
+            coarse_config,
+            chunk_size,
+            None,
+            scorer,
+        )
+    }
+
+    /// 任意の類似度スコアラーおよび明示的なゲーティング設定を指定して、粗密 2 段階探索とマイクロバッチチャンキングを統合した安全推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問マップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `chunk_size`: 1 回のフォワードパスで処理する最大質問数。
+    /// - `gating_config`: 明示的なゲーティング設定 (任意)。
+    /// - `scorer`: 類似度スコアラー実装。
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_batch_questions_coarse_to_fine_chunked_with_gating_and_scorer<
+        S: CoarseScorer,
+    >(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        chunk_size: usize,
+        gating_config: Option<&GatingConfig>,
         scorer: &S,
     ) -> Result<IndexMap<String, Answer>> {
         coarse_config.validate()?;
@@ -550,23 +694,37 @@ impl InferenceEngine {
                     .get(q_key)
                     .expect("キーの一致が保証されている。");
 
-                let answer = evaluate_question_with_buf(
+                let mut answer = evaluate_question_with_buf(
                     question,
                     valid_logits,
                     calib_config,
                     &mut probs_buf[..k_i],
                 )?;
+
+                // 縮小されていない質問にはここでゲーティングを適用
+                if !original_keys_map.contains_key(q_key) {
+                    let orig_q = questions.get(q_key);
+                    apply_gating_to_answer(
+                        &mut answer,
+                        Some(q_key),
+                        orig_q,
+                        gating_config,
+                        calib_config,
+                    );
+                }
                 answers.insert(q_key.clone(), answer);
             }
         }
 
-        // 4. スクリーニングされた質問の確率マップを全候補空間に復元
+        // 4. スクリーニングされた質問の確率マップを全候補空間に復元し、ゲーティングを適用
         for (q_key, original_keys) in &original_keys_map {
             if let Some(answer) = answers.get_mut(q_key)
                 && let Some(ref sub_probs) = answer.probabilities
             {
                 let full_probs = reconstruct_probabilities(original_keys, sub_probs);
                 answer.probabilities = Some(full_probs);
+                let orig_q = questions.get(q_key);
+                apply_gating_to_answer(answer, Some(q_key), orig_q, gating_config, calib_config);
             }
         }
 
@@ -599,6 +757,40 @@ impl InferenceEngine {
             calib_config,
             coarse_config,
             chunk_size,
+            &scorer,
+        )
+    }
+
+    /// 既定の語彙スコアラーとゲーティング設定を指定して、粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 質問マップ。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `chunk_size`: 1 回のフォワードパスで処理する最大質問数。
+    /// - `gating_config`: 明示的なゲーティング設定 (任意)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_batch_questions_coarse_to_fine_chunked_with_gating(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        chunk_size: usize,
+        gating_config: Option<&GatingConfig>,
+    ) -> Result<IndexMap<String, Answer>> {
+        let scorer = LexicalCoarseScorer::new(tokenizer);
+        self.evaluate_batch_questions_coarse_to_fine_chunked_with_gating_and_scorer(
+            tokenizer,
+            state,
+            questions,
+            calib_config,
+            coarse_config,
+            chunk_size,
+            gating_config,
             &scorer,
         )
     }

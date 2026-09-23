@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use local_jev_core::gating::{evaluate_answer_gating, evaluate_response_routing};
+use local_jev_core::gating::evaluate_response_routing;
 use local_jev_core::schema::{QuestionType, SystemOneRequest, SystemOneResponse, Usage};
 use serde_json::Value;
 
@@ -101,20 +101,21 @@ pub async fn system_one_handler(
                 .sum();
             let total_prompt_tokens = state_tokens + questions_tokens;
 
-            // 粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行
-            let mut answers = engine.evaluate_batch_questions_coarse_to_fine_chunked(
+            // 粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行 (ゲーティング判定も透過適用)
+            let answers = engine.evaluate_batch_questions_coarse_to_fine_chunked_with_gating(
                 &tokenizer,
                 &state_text,
                 &questions,
                 &calib_config,
                 &coarse_config,
                 chunk_size,
+                Some(&gating_config),
             )?;
 
-            // 確信度ゲーティング(3系統ルーティング)処理を推論直後に一貫実行(questions をゼロコピーで参照)
+            // 確信度ゲーティング (3系統ルーティング) メトリクス収集および集約サマリー算出
             let (routing_summary, route_records) = if gating_config.enabled {
                 let mut records = Vec::with_capacity(answers.len());
-                for (qid, answer) in answers.iter_mut() {
+                for (qid, answer) in answers.iter() {
                     let q_def = questions.get(qid);
                     let q_type_str = q_def
                         .map(|q| match q.question_type {
@@ -124,16 +125,16 @@ pub async fn system_one_handler(
                         })
                         .unwrap_or("unknown");
 
-                    let meta = evaluate_answer_gating(answer, Some(qid), q_def, &gating_config);
-                    records.push((
-                        meta.route.as_str(),
-                        q_type_str,
-                        qid.clone(),
-                        meta.route,
-                        meta.confidence,
-                        meta.reason.clone(),
-                    ));
-                    answer.gating = Some(meta);
+                    if let Some(ref meta) = answer.gating {
+                        records.push((
+                            meta.route.as_str(),
+                            q_type_str,
+                            qid.clone(),
+                            meta.route,
+                            meta.confidence,
+                            meta.reason.clone(),
+                        ));
+                    }
                 }
                 let summary = evaluate_response_routing(&answers);
                 (Some(summary), records)

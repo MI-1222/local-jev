@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, Result};
 use crate::gating::{
     DEFAULT_HIGH_CONFIDENCE_THRESHOLD, DEFAULT_LOW_CONFIDENCE_THRESHOLD,
-    DEFAULT_TOP_MARGIN_THRESHOLD,
+    DEFAULT_TOP_MARGIN_THRESHOLD, GatingConfig,
 };
 use crate::schema::QuestionType;
 
@@ -91,6 +91,24 @@ impl Default for GatingThresholds {
     }
 }
 
+impl GatingThresholds {
+    /// ゲーティング判定設定構造体へ変換する。
+    ///
+    /// # 引数
+    /// - `enabled`: ゲーティング処理を有効化するかどうかの真偽値。
+    ///
+    /// # 戻り値
+    /// - 閾値が反映された `GatingConfig`。
+    pub fn to_gating_config(&self, enabled: bool) -> GatingConfig {
+        GatingConfig {
+            enabled,
+            high_threshold: self.high_threshold,
+            low_threshold: self.low_threshold,
+            top_margin_threshold: self.top_margin_threshold,
+        }
+    }
+}
+
 /// 成果物引き渡し用 `calibration.json` のスキーマ構造体。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalibrationConfig {
@@ -139,6 +157,11 @@ impl CalibrationConfig {
     pub fn with_gating_thresholds(mut self, gating_thresholds: GatingThresholds) -> Self {
         self.gating_thresholds = gating_thresholds;
         self
+    }
+
+    /// 内包されるゲーティング閾値から有効状態の `GatingConfig` を導出する。
+    pub fn gating_config(&self) -> GatingConfig {
+        self.gating_thresholds.to_gating_config(true)
     }
 
     /// JSON 文字列からデシリアライズする。
@@ -268,5 +291,12 @@ mod tests {
         assert_eq!(loaded.get_temperature(QuestionType::Score, 7), 1.10);
 
         assert_eq!(loaded.get_temperature(QuestionType::Noul, 1), 0.95);
+
+        // ゲーティング設定変換のテスト
+        let gating_cfg = loaded.gating_config();
+        assert!(gating_cfg.enabled);
+        assert!((gating_cfg.high_threshold - DEFAULT_HIGH_CONFIDENCE_THRESHOLD).abs() < 1e-9);
+        assert!((gating_cfg.low_threshold - DEFAULT_LOW_CONFIDENCE_THRESHOLD).abs() < 1e-9);
+        assert!((gating_cfg.top_margin_threshold - DEFAULT_TOP_MARGIN_THRESHOLD).abs() < 1e-9);
     }
 }

@@ -6,6 +6,7 @@
 pub mod batch;
 pub mod coarse;
 pub mod config;
+pub mod gating;
 pub mod provider;
 pub mod session;
 
@@ -16,5 +17,6 @@ pub use coarse::{
     LexicalCoarseScorer, filter_top_candidates, is_negative_candidate, reconstruct_probabilities,
 };
 pub use config::{ExecutionProvider, OptimizationLevel, SessionConfig};
+pub use gating::{apply_gating_to_answer, apply_gating_to_answers, resolve_gating_config};
 pub use provider::register_execution_providers;
 pub use session::InferenceEngine;

@@ -33,10 +33,10 @@ MAX_NUM_OPTIONS: int = 255
 MIN_NUM_OPTIONS: int = 1
 """単一質問あたりの最小候補数。"""
 
-DEFAULT_HIGH_CONFIDENCE_THRESHOLD: float = 0.85
+DEFAULT_HIGH_CONFIDENCE_THRESHOLD: float = 0.70
 """自動実行 (AutoExecute) と判定するための高確信度下限閾値。"""
 
-DEFAULT_LOW_CONFIDENCE_THRESHOLD: float = 0.50
+DEFAULT_LOW_CONFIDENCE_THRESHOLD: float = 0.35
 """確認・二次検証要求 (ConfirmOrEscalate) と判定するための中確信度下限閾値。"""
 
 DEFAULT_TOP_MARGIN_THRESHOLD: float = 0.15

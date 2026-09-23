@@ -12,6 +12,7 @@ use local_jev_core::contract::model_spec::{
     ModelInputDimensions, TENSOR_ATTENTION_MASK, TENSOR_INPUT_IDS, TENSOR_LOGITS, TENSOR_OP_INDICES,
 };
 use local_jev_core::decision::evaluate_question;
+use local_jev_core::gating::GatingConfig;
 use local_jev_core::schema::{Answer, Question, QuestionType};
 
 use ort::session::Session;
@@ -22,6 +23,7 @@ use crate::engine::coarse::{
     reconstruct_probabilities,
 };
 use crate::engine::config::{ExecutionProvider, SessionConfig};
+use crate::engine::gating::apply_gating_to_answer;
 use crate::engine::provider::register_execution_providers;
 use crate::error::{Result, RuntimeError};
 use crate::tokenizer::{JevTokenizer, TokenizedQuestion};
@@ -455,6 +457,21 @@ impl InferenceEngine {
     /// 直接通常推論 (`encode_question` -> `forward_question` -> `evaluate_question`) へバイパスする。
     ///
     /// # 引数
+    /// 任意の類似度スコアラーを指定して、粗密 2 段階探索 (Coarse-to-Fine) で単一質問を評価する。
+    ///
+    /// # 処理フロー
+    /// 1. `question.question_type == QuestionType::Choice` かつ `criteria.len() > coarse_config.threshold` の場合にのみ 2 段階探索を発動。
+    /// 2. ネガティブ候補保護 (Pinning) およびスコアラーによる Top-M スクリーニングを実施。
+    /// 3. 絞り込み後の候補マップを用いて部分質問 `sub_question` を構築。
+    /// 4. `tokenizer.encode_question` および `self.forward_question` を実行。
+    /// 5. 較正設定 `calib_config` (Fine 候補数 $M$ に対応するバケット) を適用して `sub_answer` を導出。
+    /// 6. `reconstruct_probabilities` により除外候補を確率 0.0 として全候補確率マップを再構成。
+    /// 7. 較正設定の閾値またはリクエスト指定設定に基づき、透過的に確信度ゲーティングを適用して返却。
+    ///
+    /// 発動条件を満たさない質問 (候補数 $K \le \text{threshold}$、または Score/Noul 型) は、
+    /// 直接通常推論 (`encode_question` -> `forward_question` -> `evaluate_question`) へバイパスする。
+    ///
+    /// # 引数
     /// - `tokenizer`: Jev 高速トークナイザー。
     /// - `state`: 文脈テキスト。
     /// - `question`: 質問定義。
@@ -468,6 +485,38 @@ impl InferenceEngine {
         question: &Question,
         calib_config: &CalibrationConfig,
         coarse_config: &CoarseToFineConfig,
+        scorer: &S,
+    ) -> Result<Answer> {
+        self.evaluate_question_coarse_to_fine_with_gating_and_scorer(
+            tokenizer,
+            state,
+            question,
+            calib_config,
+            coarse_config,
+            None,
+            scorer,
+        )
+    }
+
+    /// 任意の類似度スコアラーとゲーティング設定を指定して、粗密 2 段階探索で単一質問を評価する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `question`: 質問定義。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `gating_config`: 明示的なゲーティング設定 (任意、未指定時は較正設定から導出)。
+    /// - `scorer`: 類似度スコアラー実装。
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_question_coarse_to_fine_with_gating_and_scorer<S: CoarseScorer>(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        question: &Question,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        gating_config: Option<&GatingConfig>,
         scorer: &S,
     ) -> Result<Answer> {
         coarse_config.validate()?;
@@ -485,7 +534,16 @@ impl InferenceEngine {
             // バイパス: 通常の単一推論を実行
             let tokenized = tokenizer.encode_question(state, question)?;
             let logits = self.forward_question(&tokenized)?;
-            return evaluate_question(question, &logits, calib_config).map_err(RuntimeError::Core);
+            let mut answer =
+                evaluate_question(question, &logits, calib_config).map_err(RuntimeError::Core)?;
+            apply_gating_to_answer(
+                &mut answer,
+                None,
+                Some(question),
+                gating_config,
+                calib_config,
+            );
+            return Ok(answer);
         }
 
         let map = question
@@ -517,14 +575,25 @@ impl InferenceEngine {
             .as_ref()
             .map(|sub_probs| reconstruct_probabilities(&original_keys, sub_probs));
 
-        Ok(Answer {
+        let mut answer = Answer {
             choice: sub_answer.choice,
             confidence: sub_answer.confidence,
             probabilities: full_probabilities,
             score: None,
             noul: None,
             gating: None,
-        })
+        };
+
+        // 6. ゲーティング判定の適用 (縮小空間での確信度を尊重しつつ監査メタデータを付与)
+        apply_gating_to_answer(
+            &mut answer,
+            None,
+            Some(question),
+            gating_config,
+            calib_config,
+        );
+
+        Ok(answer)
     }
 
     /// 既定の語彙スコアラー (`LexicalCoarseScorer`) を用いて、粗密 2 段階探索で単一質問を評価する。
@@ -550,6 +619,36 @@ impl InferenceEngine {
             question,
             calib_config,
             coarse_config,
+            &scorer,
+        )
+    }
+
+    /// 既定の語彙スコアラーとゲーティング設定を指定して、粗密 2 段階探索で単一質問を評価する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `question`: 質問定義。
+    /// - `calib_config`: 較正温度設定。
+    /// - `coarse_config`: 粗密探索設定。
+    /// - `gating_config`: 明示的なゲーティング設定 (任意)。
+    pub fn evaluate_question_coarse_to_fine_with_gating(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        question: &Question,
+        calib_config: &CalibrationConfig,
+        coarse_config: &CoarseToFineConfig,
+        gating_config: Option<&GatingConfig>,
+    ) -> Result<Answer> {
+        let scorer = LexicalCoarseScorer::new(tokenizer);
+        self.evaluate_question_coarse_to_fine_with_gating_and_scorer(
+            tokenizer,
+            state,
+            question,
+            calib_config,
+            coarse_config,
+            gating_config,
             &scorer,
         )
     }

@@ -167,12 +167,12 @@ async fn test_gating_confirm_or_escalate_with_system2_context() {
         },
     );
 
-    // テストモデルの確信度 (約0.00017) が確認要求境界 [0.00005, 0.010) に入る閾値を設定
+    // テストモデルの確信度 (~0.9968) が確認要求境界 [0.00005, 0.998) に入るよう閾値を設定
     let strict_gating = GatingConfig {
         enabled: true,
-        high_threshold: 0.010,
+        high_threshold: 0.998,
         low_threshold: 0.00005,
-        top_margin_threshold: 0.20,
+        top_margin_threshold: 0.90,
     };
 
     let mut req_payload = SystemOneRequest::new(

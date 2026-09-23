@@ -17,10 +17,10 @@ use crate::error::{CoreError, Result};
 use crate::schema::{Answer, Question, QuestionType};
 
 /// デフォルトの高確信度閾値 (自動実行境界)。
-pub const DEFAULT_HIGH_CONFIDENCE_THRESHOLD: f64 = 0.85;
+pub const DEFAULT_HIGH_CONFIDENCE_THRESHOLD: f64 = 0.70;
 
 /// デフォルトの中確信度下限閾値 (確認・二次検証要求境界)。
-pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f64 = 0.50;
+pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f64 = 0.35;
 
 /// デフォルトの上位 2 候補確率マージン閾値。
 pub const DEFAULT_TOP_MARGIN_THRESHOLD: f64 = 0.15;
@@ -67,11 +67,11 @@ pub struct GatingConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// 自動実行 (AutoExecute) と判定するための確信度下限値 (デフォルト: 0.85)。
+    /// 自動実行 (AutoExecute) と判定するための確信度下限値 (デフォルト: 0.70)。
     #[serde(default = "default_high_threshold")]
     pub high_threshold: f64,
 
-    /// 確認/エスカレーション (ConfirmOrEscalate) と判定するための確信度下限値 (デフォルト: 0.50)。
+    /// 確認/エスカレーション (ConfirmOrEscalate) と判定するための確信度下限値 (デフォルト: 0.35)。
     #[serde(default = "default_low_threshold")]
     pub low_threshold: f64,
 
@@ -256,69 +256,66 @@ pub fn evaluate_answer_gating(
 ) -> GatingMetadata {
     let conf = answer.effective_confidence().unwrap_or(0.0).clamp(0.0, 1.0);
 
-    // 確率分布から上位候補のソートリストを構築
-    let mut candidates: Vec<CandidateProbability> = Vec::new();
-    if let Some(probs) = &answer.probabilities {
-        candidates = probs
-            .iter()
-            .map(|(k, &p)| CandidateProbability {
-                candidate: k.clone(),
-                probability: p,
-            })
-            .collect();
-        candidates.sort_by(|a, b| {
-            b.probability
-                .partial_cmp(&a.probability)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    // ゼロアロケーション走査による上位 2 候補の確率マージン (Top-Margin) 算出。
+    let margin = if let Some(probs) = &answer.probabilities {
+        let k = probs.len();
+        if k <= 1 {
+            Some(1.0)
+        } else {
+            let mut max1 = -f64::INFINITY;
+            let mut max2 = -f64::INFINITY;
+            for &p in probs.values() {
+                if p > max1 {
+                    max2 = max1;
+                    max1 = p;
+                } else if p > max2 {
+                    max2 = p;
+                }
+            }
+            if max1.is_finite() && max2.is_finite() {
+                Some((max1 - max2).abs().clamp(0.0, 1.0))
+            } else {
+                None
+            }
+        }
     } else if let Some(p_true) = answer.noul {
         let p_false = (1.0 - p_true).clamp(0.0, 1.0);
-        if p_true >= p_false {
-            candidates.push(CandidateProbability {
-                candidate: "true".to_string(),
-                probability: p_true,
-            });
-            candidates.push(CandidateProbability {
-                candidate: "false".to_string(),
-                probability: p_false,
-            });
-        } else {
-            candidates.push(CandidateProbability {
-                candidate: "false".to_string(),
-                probability: p_false,
-            });
-            candidates.push(CandidateProbability {
-                candidate: "true".to_string(),
-                probability: p_true,
-            });
-        }
-    }
-
-    // 上位 2 候補の確率差(Margin)を算出
-    let margin = if candidates.len() >= 2 {
-        Some(
-            (candidates[0].probability - candidates[1].probability)
-                .abs()
-                .clamp(0.0, 1.0),
-        )
+        Some((p_true - p_false).abs().clamp(0.0, 1.0))
     } else {
         None
     };
 
-    // 分布エントロピー指標の取得
+    // 分布エントロピー・散らばり指標の直接算出。
     let entropy = match question.map(|q| q.question_type) {
         Some(QuestionType::Choice) => {
-            // Choice の場合、confidence = 1 - H/ln(K) であるため、逆算した正規化エントロピーを記録
-            answer.confidence.map(|c| (1.0 - c).clamp(0.0, 1.0))
+            if let Some(probs) = &answer.probabilities {
+                let p_vals: Vec<f64> = probs.values().copied().collect();
+                crate::math::normalized_entropy(&p_vals).ok()
+            } else {
+                None
+            }
         }
         Some(QuestionType::Score) => {
-            // Score の場合、confidence = 1 - Var/Var_max であるため、正規化分散指標を記録
+            // Score 型の場合、confidence は正規化分散確信度 C_var であるため、散らばり指標として正規化分散 (1 - C_var) を記録する。
             answer.confidence.map(|c| (1.0 - c).clamp(0.0, 1.0))
+        }
+        Some(QuestionType::Noul) => {
+            // Noul 型の場合、二値エントロピー指標 (底 2 のシャノンエントロピー) を記録する。
+            answer.noul.map(|p_true| {
+                let p_false = (1.0 - p_true).clamp(0.0, 1.0);
+                if p_true > 0.0 && p_false > 0.0 {
+                    let h =
+                        -(p_true * p_true.ln() + p_false * p_false.ln()) / std::f64::consts::LN_2;
+                    h.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            })
         }
         _ => None,
     };
 
-    // 閾値判定とマージンガード
+    // 閾値判定とマージンガード。
     let (route, reason) = if conf >= config.high_threshold - EPSILON {
         if let Some(m) = margin {
             if m < config.top_margin_threshold - EPSILON {
@@ -365,8 +362,45 @@ pub fn evaluate_answer_gating(
         )
     };
 
-    // エスカレーションコンテキストの生成 (ConfirmOrEscalate または Fallback 時)
+    // エスカレーションコンテキストの遅延生成 (ConfirmOrEscalate または Fallback 時のみアロケーションを実行)。
     let escalation = if route != DecisionRoute::AutoExecute {
+        let mut candidates: Vec<CandidateProbability> = Vec::new();
+        if let Some(probs) = &answer.probabilities {
+            candidates = probs
+                .iter()
+                .map(|(k, &p)| CandidateProbability {
+                    candidate: k.clone(),
+                    probability: p,
+                })
+                .collect();
+            candidates.sort_by(|a, b| {
+                b.probability
+                    .partial_cmp(&a.probability)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        } else if let Some(p_true) = answer.noul {
+            let p_false = (1.0 - p_true).clamp(0.0, 1.0);
+            if p_true >= p_false {
+                candidates.push(CandidateProbability {
+                    candidate: "true".to_string(),
+                    probability: p_true,
+                });
+                candidates.push(CandidateProbability {
+                    candidate: "false".to_string(),
+                    probability: p_false,
+                });
+            } else {
+                candidates.push(CandidateProbability {
+                    candidate: "false".to_string(),
+                    probability: p_false,
+                });
+                candidates.push(CandidateProbability {
+                    candidate: "true".to_string(),
+                    probability: p_true,
+                });
+            }
+        }
+
         let top_candidates = candidates.iter().take(3).cloned().collect();
         let prompt_template = build_escalation_prompt(question_id, question, &candidates, margin);
 
@@ -497,15 +531,15 @@ mod tests {
     fn test_gating_config_default_and_validation() {
         let config = GatingConfig::default();
         assert!(config.enabled);
-        assert!((config.high_threshold - 0.85).abs() < EPSILON);
-        assert!((config.low_threshold - 0.50).abs() < EPSILON);
+        assert!((config.high_threshold - 0.70).abs() < EPSILON);
+        assert!((config.low_threshold - 0.35).abs() < EPSILON);
         assert!((config.top_margin_threshold - 0.15).abs() < EPSILON);
         assert!(config.validate().is_ok());
 
         let invalid_config = GatingConfig {
             enabled: true,
-            high_threshold: 0.40,
-            low_threshold: 0.60,
+            high_threshold: 0.30,
+            low_threshold: 0.50,
             top_margin_threshold: 0.15,
         };
         assert!(invalid_config.validate().is_err());
@@ -529,12 +563,12 @@ mod tests {
 
     #[test]
     fn test_evaluate_answer_gating_margin_guard_demote_to_confirm() {
-        // 確信度は 0.88 と高水準だが、Top-1 と Top-2 が僅差 (0.48 vs 0.44 -> margin 0.04 < 0.15) のケース
+        // 確信度は 0.75 と高水準だが、Top-1 と Top-2 が僅差 (0.48 vs 0.44 -> margin 0.04 < 0.15) のケース
         let mut probs = IndexMap::new();
         probs.insert("opt_a".to_string(), 0.48);
         probs.insert("opt_b".to_string(), 0.44);
         probs.insert("opt_c".to_string(), 0.08);
-        let answer = Answer::choice("opt_a", probs, 0.88);
+        let answer = Answer::choice("opt_a", probs, 0.75);
 
         let config = GatingConfig::default();
         let meta = evaluate_answer_gating(&answer, Some("q1"), None, &config);
@@ -553,7 +587,7 @@ mod tests {
         let mut probs = IndexMap::new();
         probs.insert("opt_a".to_string(), 0.60);
         probs.insert("opt_b".to_string(), 0.40);
-        let answer = Answer::choice("opt_a", probs, 0.65);
+        let answer = Answer::choice("opt_a", probs, 0.50);
 
         let config = GatingConfig::default();
         let meta = evaluate_answer_gating(&answer, Some("q1"), None, &config);
@@ -581,12 +615,12 @@ mod tests {
     fn test_evaluate_answer_gating_noul_high_and_low() {
         let config = GatingConfig::default();
 
-        // High: P=0.96 -> C=|2*0.96 - 1| = 0.92 >= 0.85
+        // High: P=0.96 -> C=|2*0.96 - 1| = 0.92 >= 0.70
         let ans_high = Answer::noul(0.96);
         let meta_high = evaluate_answer_gating(&ans_high, Some("noul_q"), None, &config);
         assert_eq!(meta_high.route, DecisionRoute::AutoExecute);
 
-        // Low: P=0.52 -> C=|2*0.52 - 1| = 0.04 < 0.50
+        // Low: P=0.52 -> C=|2*0.52 - 1| = 0.04 < 0.35
         let ans_low = Answer::noul(0.52);
         let meta_low = evaluate_answer_gating(&ans_low, Some("noul_q"), None, &config);
         assert_eq!(meta_low.route, DecisionRoute::Fallback);
@@ -606,9 +640,9 @@ mod tests {
             escalation: None,
         });
 
-        let ans2 = Answer::choice("b", IndexMap::new(), 0.70).with_gating(GatingMetadata {
+        let ans2 = Answer::choice("b", IndexMap::new(), 0.50).with_gating(GatingMetadata {
             route: DecisionRoute::ConfirmOrEscalate,
-            confidence: 0.70,
+            confidence: 0.50,
             entropy: None,
             margin: None,
             reason: String::new(),
