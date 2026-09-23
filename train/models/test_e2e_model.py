@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from contract import TOKEN_OPTION_MARKER
-from models.backbone import DEFAULT_MODERNBERT_MODEL_ID, prepare_backbone_and_tokenizer
+from models.backbone import DEFAULT_BACKBONE_MODEL_ID, prepare_backbone_and_tokenizer
 from models.decision_head import JevDecisionModel
 
 
@@ -13,12 +13,12 @@ def test_e2e_modernbert_decision_inference() -> None:
     """ModernBERT と結合した JevDecisionModel で実際のテキストからロジットが出力されるか検証する。
 
     検証項目:
-    - 実際の `ModernBERT-base` とデシジョンヘッドを接続し、
+    - 実際の日本語バックボーン (`modernbert-ja-130m`) とデシジョンヘッドを接続し、
       3 候補を含む自然言語プロンプトから `[1, 3]` のロジットが出力されること。
     - 出力ロジットに NaN や Inf が含まれないこと。
     """
     backbone, tokenizer, op_token_id = prepare_backbone_and_tokenizer(
-        DEFAULT_MODERNBERT_MODEL_ID
+        DEFAULT_BACKBONE_MODEL_ID
     )
     model = JevDecisionModel(backbone=backbone)
     model.eval()

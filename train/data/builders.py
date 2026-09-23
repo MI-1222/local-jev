@@ -13,6 +13,10 @@ from data.converters.ag_news import AGNewsConverter
 from data.converters.banking77 import Banking77Converter
 from data.converters.base import BaseDatasetConverter
 from data.converters.clinc150 import Clinc150Converter
+from data.converters.jglue_jcommonsenseqa import JGlueJCommonsenseQAConverter
+from data.converters.jglue_jnli import JGlueJNLIConverter
+from data.converters.jglue_jsts import JGlueJSTSConverter
+from data.converters.jglue_marc_ja import JGlueMarcJaConverter
 from data.converters.mnli import MNLIConverter
 from data.converters.sst5 import SST5Converter
 from data.negative_sampler import SyntheticNegativeInjector
@@ -48,6 +52,12 @@ class UnifiedDatasetBuilder:
             "mnli_noul": MNLIConverter(mode="noul", seed=seed),
             "ag_news": AGNewsConverter(seed=seed),
             "sst5": SST5Converter(seed=seed),
+            "jglue_marc_ja": JGlueMarcJaConverter(mode="noul", seed=seed),
+            "jglue_marc_ja_choice": JGlueMarcJaConverter(mode="choice", seed=seed),
+            "jglue_jnli": JGlueJNLIConverter(mode="choice", seed=seed),
+            "jglue_jnli_noul": JGlueJNLIConverter(mode="noul", seed=seed),
+            "jglue_jsts": JGlueJSTSConverter(seed=seed),
+            "jglue_jcommonsenseqa": JGlueJCommonsenseQAConverter(seed=seed),
         }
 
     def register_converter(self, name: str, converter: BaseDatasetConverter) -> None:

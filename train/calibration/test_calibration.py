@@ -25,6 +25,7 @@ from calibration.evaluator import (
 from calibration.optimizer import (
     LogitCache,
     TemperatureOptimizer,
+    compute_bucket_chance_level,
 )
 from contract import CalibrationConfig
 from data.schema import QuestionType
@@ -43,6 +44,8 @@ def test_calibration_config_serialization() -> None:
         batch_size=32,
         seed=123,
         output_dir="runs/calibration/custom",
+        reg_lambda=0.35,
+        accuracy_gating_factor=1.2,
     )
 
     # 辞書変換
@@ -50,18 +53,22 @@ def test_calibration_config_serialization() -> None:
     restored_dict = CalibrationRunConfig.from_dict(d)
     assert restored_dict.tau_min == pytest.approx(0.1)
     assert restored_dict.min_samples_per_bucket == 20
+    assert restored_dict.reg_lambda == pytest.approx(0.35)
+    assert restored_dict.accuracy_gating_factor == pytest.approx(1.2)
 
     # YAML 変換
     yaml_str = config.to_yaml()
     restored_yaml = CalibrationRunConfig.from_yaml(yaml_str)
     assert restored_yaml.checkpoint_path == "runs/sft/best_checkpoint"
     assert restored_yaml.num_bins == 15
+    assert restored_yaml.reg_lambda == pytest.approx(0.35)
 
     # JSON 変換
     json_str = config.to_json()
     restored_json = CalibrationRunConfig.from_json(json_str)
     assert restored_json.seed == 123
     assert restored_json.output_dir == "runs/calibration/custom"
+    assert restored_json.accuracy_gating_factor == pytest.approx(1.2)
 
     # ファイル永続化と読み込み
     with TemporaryDirectory() as tmp_dir:
@@ -69,11 +76,13 @@ def test_calibration_config_serialization() -> None:
         config.save(yaml_file)
         loaded_yaml = CalibrationRunConfig.load(yaml_file)
         assert loaded_yaml.tau_max == pytest.approx(4.0)
+        assert loaded_yaml.reg_lambda == pytest.approx(0.35)
 
         json_file = Path(tmp_dir) / "config.json"
         config.save(json_file)
         loaded_json = CalibrationRunConfig.load(json_file)
         assert loaded_json.batch_size == 32
+        assert loaded_json.accuracy_gating_factor == pytest.approx(1.2)
 
 
 def test_matches_bucket_expr() -> None:
@@ -408,3 +417,157 @@ def test_collect_logits_heterogeneous_options() -> None:
     assert sub_logits.shape == (1, 3)
     assert sub_mask.shape == (1, 3)
     assert sub_labels.tolist() == [1]
+
+
+def test_compute_bucket_chance_level() -> None:
+    """可変候補数および固定候補数における Chance Level の計算が数理的に正しいかを検証する。"""
+    # 1. 全て 4 択の均一バケット (Chance Level = 0.25)
+    mask_4 = torch.ones(10, 4, dtype=torch.bool)
+    assert compute_bucket_chance_level(mask_4) == pytest.approx(0.25, abs=1e-5)
+
+    # 2. 3 択と 5 択が同数混在するバケット
+    # 1/3 (0.3333...) と 1/5 (0.2) の平均 = 4/15 = 0.26666...
+    mask_mixed = torch.zeros(4, 5, dtype=torch.bool)
+    mask_mixed[:2, :3] = True  # 最初の 2 サンプルは 3 択
+    mask_mixed[2:, :5] = True  # 残り 2 サンプルは 5 択
+    expected_chance = (1.0 / 3.0 + 1.0 / 5.0) / 2.0
+    assert compute_bucket_chance_level(mask_mixed) == pytest.approx(
+        expected_chance, abs=1e-5
+    )
+
+    # 3. 空テンソルおよび無効候補のみの場合のガード
+    assert compute_bucket_chance_level(torch.empty(0, 5, dtype=torch.bool)) == 0.0
+    assert compute_bucket_chance_level(torch.zeros(3, 4, dtype=torch.bool)) == 0.0
+
+
+def test_accuracy_gating_fallback() -> None:
+    """検証正解率が偶然水準 (Chance Level * factor) 以下のバケットで精度ゲーティングが作動することを検証する。"""
+    torch.manual_seed(42)
+    n_samples = 40
+    n_options = 4  # 4 択 (Chance Level = 0.25)
+
+    # 正解率が 25% (40 件中ちょうど 10 件のみ正解) となるロジットを作成
+    labels = torch.randint(0, n_options, (n_samples,))
+    logits = torch.randn(n_samples, n_options) * 0.1
+    for i in range(n_samples):
+        if i < 10:
+            logits[i, labels[i]] = 5.0  # 正解
+        else:
+            wrong_idx = (labels[i] + 1) % n_options
+            logits[i, wrong_idx] = 5.0  # 誤答
+
+    op_mask = torch.ones(n_samples, n_options, dtype=torch.bool)
+
+    cache = LogitCache(
+        logits=logits,
+        op_mask=op_mask,
+        labels=labels,
+        question_types=[QuestionType.CHOICE.value] * n_samples,
+        candidate_counts=[n_options] * n_samples,
+    )
+
+    config = CalibrationRunConfig(
+        min_samples_per_bucket=15,
+        default_temperature=1.0,
+        accuracy_gating_factor=1.15,
+    )
+    optimizer = TemperatureOptimizer(config=config)
+
+    calib_config, summary = optimizer.calibrate(cache)
+    m = summary["buckets"]["choice_3-5"]
+
+    # ゲーティングが作動して default_temperature (1.0) に固定されること
+    assert m["status"] == "ACCURACY_GATED"
+    assert m["is_fallback"] is True
+    assert m["temperature"] == 1.0
+    assert calib_config.temperature_map.choice["3-5"] == 1.0
+    assert "精度ゲーティング作動" in m["reason"]
+
+
+def test_regularized_optimization_prevents_explosion() -> None:
+    """正則化項 lambda * (ln tau)^2 が機能し、無制約時に上限へ張り付くデータでも健全範囲に収束することを検証する。"""
+    torch.manual_seed(42)
+    n_samples = 80
+    n_options = 4
+
+    # 偶然確率をわずかに上回るが誤答が多く過信しているロジット
+    # 正解率 約 37.5% (4 択チャンスレベル 25% よりは高く、ゲーティングは通過する)
+    labels = torch.randint(0, n_options, (n_samples,))
+    logits = torch.randn(n_samples, n_options)
+    for i in range(n_samples):
+        if i % 8 < 3:
+            logits[i, labels[i]] += 3.0
+        else:
+            wrong_idx = (labels[i] + 1) % n_options
+            logits[i, wrong_idx] += 3.0
+
+    op_mask = torch.ones(n_samples, n_options, dtype=torch.bool)
+
+    # 1. 正則化なし (reg_lambda = 0.0) の場合: NLL 最小化のために温度が上限 5.0 に張り付く
+    optimizer_unreg = TemperatureOptimizer(
+        CalibrationRunConfig(
+            tau_min=0.1,
+            tau_max=5.0,
+            reg_lambda=0.0,
+            accuracy_gating_factor=1.0,
+        )
+    )
+    tau_unreg = optimizer_unreg.optimize_scalar(logits, labels, op_mask)
+    assert tau_unreg >= 4.5  # ほぼ上限に張り付く
+
+    # 2. 正則化あり (reg_lambda = 0.2) の場合: ペナルティにより上限張り付きが抑止される
+    optimizer_reg = TemperatureOptimizer(
+        CalibrationRunConfig(
+            tau_min=0.1,
+            tau_max=5.0,
+            reg_lambda=0.2,
+            accuracy_gating_factor=1.0,
+        )
+    )
+    tau_reg = optimizer_reg.optimize_scalar(logits, labels, op_mask)
+    # 正則化によって tau は 5.0 に張り付かず、上限より有意に低い健全な範囲に収束する
+    assert tau_reg < 3.0
+    assert tau_reg > 1.0
+
+
+def test_accuracy_gating_passes_for_high_accuracy() -> None:
+    """正解率が偶然水準を明確に超えている場合は、精度ゲーティングを通過して最適化が成功することを検証する。"""
+    torch.manual_seed(42)
+    n_samples = 60
+    n_options = 4
+
+    # 正解率 85% の過信ロジット
+    labels = torch.randint(0, n_options, (n_samples,))
+    logits = torch.randn(n_samples, n_options) * 0.2
+    for i in range(n_samples):
+        if i % 10 < 8:
+            logits[i, labels[i]] += 4.5
+        else:
+            wrong_idx = (labels[i] + 1) % n_options
+            logits[i, wrong_idx] += 4.5
+
+    op_mask = torch.ones(n_samples, n_options, dtype=torch.bool)
+
+    cache = LogitCache(
+        logits=logits,
+        op_mask=op_mask,
+        labels=labels,
+        question_types=[QuestionType.CHOICE.value] * n_samples,
+        candidate_counts=[n_options] * n_samples,
+    )
+
+    optimizer = TemperatureOptimizer(
+        CalibrationRunConfig(
+            min_samples_per_bucket=15,
+            accuracy_gating_factor=1.15,
+            reg_lambda=0.2,
+        )
+    )
+
+    _calib_config, summary = optimizer.calibrate(cache)
+    m = summary["buckets"]["choice_3-5"]
+
+    assert m["status"] == "OPTIMIZED"
+    assert m["is_fallback"] is False
+    assert m["temperature"] > 1.0
+    assert m["post_calibration"]["ece"] < m["pre_calibration"]["ece"]

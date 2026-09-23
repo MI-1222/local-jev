@@ -164,29 +164,42 @@ def sft_collate_fn(
 def get_optimizer_grouped_parameters(
     model: JevDecisionModel,
     lr_backbone: float,
+    lr_embed: float,
     lr_head: float,
     weight_decay: float,
+    head_weight_decay: float = 0.001,
 ) -> list[dict[str, Any]]:
-    """バックボーンとデシジョンヘッドの学習率を分離し、重み減衰をグループ化する。
+    """バックボーン、埋め込み層、およびデシジョンヘッドの学習率を分離し、重み減衰をグループ化する。
 
     内部ロジック:
-    1. バイアス項および LayerNorm 重みは weight_decay=0.0 とする。
-    2. バックボーンのパラメータには lr_backbone を適用する。
-    3. デシジョンヘッド (および Gather 層) には lr_head を適用する。
+    1. バイアス項および正規化層(LayerNorm / RMSNorm / norm)の重みは weight_decay=0.0 とする。
+    2. 埋め込み層 (embeddings / tok_embeddings) には lr_embed を適用する。
+    3. デシジョンヘッド (decision_head / gather_layer) には lr_head を適用する。
+    4. それ以外のバックボーン Transformer レイヤーには lr_backbone を適用する。
 
     Args:
         model (JevDecisionModel): Jev 決定モデル。
-        lr_backbone (float): バックボーンの学習率。
+        lr_backbone (float): バックボーン Transformer レイヤーの学習率。
+        lr_embed (float): [OP] を含む入力埋め込み層の学習率。
         lr_head (float): デシジョンヘッドの学習率。
-        weight_decay (float): 重み減衰率。
+        weight_decay (float): バックボーンおよび埋め込み層の重み減衰率。
+        head_weight_decay (float): デシジョンヘッドの重み減衰率(デフォルト: 0.001)。
 
     Returns:
         list[dict[str, Any]]: 最適化パラメータグループリスト。
     """
-    no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
+    no_decay = [
+        "bias",
+        "LayerNorm.weight",
+        "layer_norm.weight",
+        "norm.weight",
+        "norm.bias",
+    ]
 
     head_decay = []
     head_no_decay = []
+    embed_decay = []
+    embed_no_decay = []
     backbone_decay = []
     backbone_no_decay = []
 
@@ -194,26 +207,47 @@ def get_optimizer_grouped_parameters(
         if not param.requires_grad:
             continue
 
-        is_head = name.startswith(("decision_head", "gather_layer"))
         is_no_decay = any(nd in name for nd in no_decay)
 
-        if is_head:
+        if name.startswith(("decision_head", "gather_layer")):
             if is_no_decay:
                 head_no_decay.append(param)
             else:
                 head_decay.append(param)
+        elif "embeddings" in name or "tok_embeddings" in name:
+            if is_no_decay:
+                embed_no_decay.append(param)
+            else:
+                embed_decay.append(param)
         else:
             if is_no_decay:
                 backbone_no_decay.append(param)
             else:
                 backbone_decay.append(param)
 
-    return [
-        {"params": backbone_decay, "lr": lr_backbone, "weight_decay": weight_decay},
-        {"params": backbone_no_decay, "lr": lr_backbone, "weight_decay": 0.0},
-        {"params": head_decay, "lr": lr_head, "weight_decay": weight_decay},
-        {"params": head_no_decay, "lr": lr_head, "weight_decay": 0.0},
-    ]
+    groups: list[dict[str, Any]] = []
+    if backbone_decay:
+        groups.append(
+            {"params": backbone_decay, "lr": lr_backbone, "weight_decay": weight_decay}
+        )
+    if backbone_no_decay:
+        groups.append(
+            {"params": backbone_no_decay, "lr": lr_backbone, "weight_decay": 0.0}
+        )
+    if embed_decay:
+        groups.append(
+            {"params": embed_decay, "lr": lr_embed, "weight_decay": weight_decay}
+        )
+    if embed_no_decay:
+        groups.append({"params": embed_no_decay, "lr": lr_embed, "weight_decay": 0.0})
+    if head_decay:
+        groups.append(
+            {"params": head_decay, "lr": lr_head, "weight_decay": head_weight_decay}
+        )
+    if head_no_decay:
+        groups.append({"params": head_no_decay, "lr": lr_head, "weight_decay": 0.0})
+
+    return groups
 
 
 class SFTTrainer:
@@ -510,7 +544,7 @@ class SFTTrainer:
         val_metrics: dict[str, Any],
         is_best: bool = False,
     ) -> Path:
-        """チェックポイントおよびトークナイザーを保存する。
+        """チェックポイントおよびトークナイザー、実行設定を保存する。
 
         Args:
             model (nn.Module): 保存対象モデル。
@@ -530,6 +564,10 @@ class SFTTrainer:
 
         # Rust 推論ランタイム用の tokenizer.json 一式を保存
         save_tokenizer_for_runtime(self.tokenizer, checkpoint_dir / "tokenizer")
+
+        # 再現性のための設定ファイルもチェックポイント内に同期保存 (完全性保証)
+        self.config.save_yaml(checkpoint_dir / "config.yaml")
+        self.config.save_json(checkpoint_dir / "config.json")
 
         metrics_file = checkpoint_dir / "metrics.json"
         metrics_file.write_text(
@@ -568,10 +606,11 @@ class SFTTrainer:
         # 2. データ準備
         train_loader, val_loader, train_dataset = self.prepare_data()
 
-        # 3. 最適化オプティマイザ・スケジューラ構築
+        # 3. 最適化オプティマイザ・スケジューラ構築 (3系統 Differential LR)
         optimizer_params = get_optimizer_grouped_parameters(
             model=self.model,
             lr_backbone=self.config.learning_rate_backbone,
+            lr_embed=self.config.learning_rate_embed,
             lr_head=self.config.learning_rate_head,
             weight_decay=self.config.weight_decay,
         )
@@ -602,18 +641,25 @@ class SFTTrainer:
 
         # 5. 初期ゼロショット検証 (ランダム水準の記録)
         initial_val_metrics = self.evaluate(prepared_model, prepared_val_loader)
+        eval_key = self.config.eval_metric
+        initial_eval_metric = float(
+            initial_val_metrics.get(eval_key, initial_val_metrics.get("accuracy", 0.0))
+        )
         logger.info(
-            "初期ゼロショット検証精度: %.4f (Loss: %.4f)。",
-            initial_val_metrics["accuracy"],
+            "初期ゼロショット検証: Loss=%.4f, Acc=%.4f (%s=%.4f)。",
             initial_val_metrics["loss"],
+            initial_val_metrics["accuracy"],
+            eval_key,
+            initial_eval_metric,
         )
         self.metrics_history.append(
             {"epoch": 0, "stage": "zero_shot", "metrics": initial_val_metrics}
         )
 
         # 6. 学習ループ
-        best_acc = -1.0
+        best_metric_val = -1.0
         best_epoch = 0
+        patience_counter = 0
 
         for epoch in range(1, self.config.num_epochs + 1):
             logger.info("--- エポック %d/%d 開始 ---", epoch, self.config.num_epochs)
@@ -629,12 +675,17 @@ class SFTTrainer:
             )
 
             val_metrics = self.evaluate(prepared_model, prepared_val_loader)
+            current_metric = float(
+                val_metrics.get(eval_key, val_metrics.get("accuracy", 0.0))
+            )
             logger.info(
-                "エポック %d 完了: Train Loss=%.4f, Val Loss=%.4f, Val Acc=%.4f。",
+                "エポック %d 完了: Train Loss=%.4f, Val Loss=%.4f, Val Acc=%.4f (%s=%.4f)。",
                 epoch,
                 train_metrics["loss"],
                 val_metrics["loss"],
                 val_metrics["accuracy"],
+                eval_key,
+                current_metric,
             )
 
             self.metrics_history.append(
@@ -645,11 +696,14 @@ class SFTTrainer:
                 }
             )
 
-            is_best = val_metrics["accuracy"] > best_acc
+            is_best = current_metric > best_metric_val
             if is_best:
-                best_acc = val_metrics["accuracy"]
+                best_metric_val = current_metric
                 best_epoch = epoch
+                patience_counter = 0
                 self.save_checkpoint(prepared_model, val_metrics, is_best=True)
+            else:
+                patience_counter += 1
 
             self.save_checkpoint(prepared_model, val_metrics, is_best=False)
 
@@ -670,25 +724,50 @@ class SFTTrainer:
                     }
                 )
 
+            # 早期終了判定
+            if (
+                self.config.early_stopping_patience is not None
+                and patience_counter >= self.config.early_stopping_patience
+            ):
+                logger.info(
+                    "早期終了 (Early Stopping): %d エポック連続で %s の改善が見られなかったため学習を打ち切ります。",
+                    patience_counter,
+                    eval_key,
+                )
+                break
+
         # 7. 最終サマリーの書き出し
+        best_val_data = (
+            self.metrics_history[best_epoch].get("val", {})
+            if best_epoch < len(self.metrics_history)
+            else {}
+        )
         summary_text = (
             f"# SFT Training Summary\n\n"
             f"- **Run Directory**: `{self.run_dir}`\n"
             f"- **Model**: `{self.config.model_name_or_path}`\n"
-            f"- **Epochs**: {self.config.num_epochs}\n"
+            f"- **Epochs Trained**: {min(epoch, self.config.num_epochs)}\n"
             f"- **Best Epoch**: {best_epoch}\n"
-            f"- **Best Validation Accuracy**: {best_acc:.4f}\n"
+            f"- **Best {eval_key}**: {best_metric_val:.4f}\n"
             f"- **Initial Zero-Shot Accuracy**: {initial_val_metrics['accuracy']:.4f}\n\n"
             f"## Final Validation Metrics (Best Checkpoint)\n\n"
-            f"```json\n{json.dumps(self.metrics_history[best_epoch].get('val', {}), indent=2, ensure_ascii=False)}\n```\n"
+            f"```json\n{json.dumps(best_val_data, indent=2, ensure_ascii=False)}\n```\n"
         )
         (self.run_dir / "final_summary.md").write_text(summary_text, encoding="utf-8")
-        logger.info("SFT 学習完了。最良精度: %.4f (Epoch %d)。", best_acc, best_epoch)
+        logger.info(
+            "SFT 学習完了。最良 %s: %.4f (Epoch %d)。",
+            eval_key,
+            best_metric_val,
+            best_epoch,
+        )
 
+        best_accuracy = float(best_val_data.get("accuracy", best_metric_val))
         return {
             "run_dir": str(self.run_dir),
             "best_epoch": best_epoch,
-            "best_accuracy": best_acc,
+            "best_accuracy": best_accuracy,
+            "best_metric": best_metric_val,
+            "eval_metric": eval_key,
             "initial_accuracy": initial_val_metrics["accuracy"],
             "metrics_history": self.metrics_history,
         }

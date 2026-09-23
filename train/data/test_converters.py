@@ -3,9 +3,14 @@
 import pytest
 from datasets import ClassLabel, Dataset, Features, Value
 
+from data.builders import UnifiedDatasetBuilder
 from data.converters.ag_news import AGNewsConverter
 from data.converters.banking77 import Banking77Converter, clean_banking77_label
 from data.converters.clinc150 import Clinc150Converter
+from data.converters.jglue_jcommonsenseqa import JGlueJCommonsenseQAConverter
+from data.converters.jglue_jnli import JGlueJNLIConverter
+from data.converters.jglue_jsts import JGlueJSTSConverter
+from data.converters.jglue_marc_ja import JGlueMarcJaConverter
 from data.converters.mnli import MNLIConverter
 from data.converters.sst5 import SST5Converter
 from data.prompt_pool import sample_instruction
@@ -321,3 +326,285 @@ def test_sst5_converter_mock() -> None:
     # クラス0から1件、クラス4から1件の計2件のみ抽出されること
     assert len(balanced_samples) == 2
     assert [s.target for s in balanced_samples] == ["0", "4"]
+
+
+def test_jglue_marc_ja_converter_mock() -> None:
+    """JGLUE MARC-ja コンバータのモック Dataset を用いた変換テスト。"""
+    features = Features(
+        {
+            "sentence": Value("string"),
+            "label": ClassLabel(names=["positive", "negative", "neutral"]),
+            "review_id": Value("string"),
+        }
+    )
+    mock_data = {
+        "sentence": [
+            "素晴らしい商品でした。大満足です。",
+            "すぐに壊れてしまい使い物になりません。",
+            "普通です。可もなく不可もありません。",
+        ],
+        "label": [0, 1, 2],
+        "review_id": ["rev_pos", "rev_neg", "rev_neu"],
+    }
+    ds = Dataset.from_dict(mock_data, features=features)
+
+    # Noul モードの検証 (neutral は除外されるため 2 件になる)
+    conv_noul = JGlueMarcJaConverter(mode="noul", seed=42)
+    samples_noul = list(conv_noul.convert_dataset(ds, split="test"))
+    assert len(samples_noul) == 2
+
+    assert samples_noul[0].question_type == QuestionType.NOUL
+    assert samples_noul[0].target == "true"
+    assert samples_noul[0].criteria == {}
+    assert samples_noul[0].state == mock_data["sentence"][0]
+
+    assert samples_noul[1].question_type == QuestionType.NOUL
+    assert samples_noul[1].target == "false"
+    assert samples_noul[1].criteria == {}
+    assert samples_noul[1].state == mock_data["sentence"][1]
+
+    # Choice モードの検証
+    conv_choice = JGlueMarcJaConverter(mode="choice", seed=42)
+    samples_choice = list(conv_choice.convert_dataset(ds, split="test"))
+    assert len(samples_choice) == 2
+
+    assert samples_choice[0].question_type == QuestionType.CHOICE
+    assert samples_choice[0].target == "positive"
+    assert "positive" in samples_choice[0].criteria
+    assert "negative" in samples_choice[0].criteria
+
+    assert samples_choice[1].question_type == QuestionType.CHOICE
+    assert samples_choice[1].target == "negative"
+
+
+def test_jglue_jnli_converter_mock() -> None:
+    """JGLUE JNLI コンバータのモック Dataset を用いた変換テスト。"""
+    features = Features(
+        {
+            "sentence_pair_id": Value("string"),
+            "sentence1": Value("string"),
+            "sentence2": Value("string"),
+            "label": ClassLabel(names=["entailment", "contradiction", "neutral"]),
+        }
+    )
+    mock_data = {
+        "sentence_pair_id": ["pair_0", "pair_1", "pair_2"],
+        "sentence1": [
+            "犬が公園で走っています。",
+            "子供が屋外で遊んでいます。",
+            "男性がコーヒーを飲んでいます。",
+        ],
+        "sentence2": [
+            "動物が運動しています。",
+            "子供が部屋で寝ています。",
+            "男性は20歳です。",
+        ],
+        "label": [0, 1, 2],  # entailment, contradiction, neutral
+    }
+    ds = Dataset.from_dict(mock_data, features=features)
+
+    # Choice モードの検証 (3 件すべて保持)
+    conv_choice = JGlueJNLIConverter(mode="choice", seed=42)
+    samples_choice = list(conv_choice.convert_dataset(ds, split="test"))
+    assert len(samples_choice) == 3
+
+    assert samples_choice[0].question_type == QuestionType.CHOICE
+    assert samples_choice[0].target == "entailment"
+    assert "前提: 犬が公園で走っています。" in samples_choice[0].state
+    assert "仮説: 動物が運動しています。" in samples_choice[0].state
+    assert len(samples_choice[0].criteria) == 3
+
+    assert samples_choice[1].target == "contradiction"
+    assert samples_choice[2].target == "neutral"
+
+    # Noul モードの検証 (neutral はスキップされ 2 件)
+    conv_noul = JGlueJNLIConverter(mode="noul", seed=42)
+    samples_noul = list(conv_noul.convert_dataset(ds, split="test"))
+    assert len(samples_noul) == 2
+
+    assert samples_noul[0].question_type == QuestionType.NOUL
+    assert samples_noul[0].target == "true"
+    assert samples_noul[0].state == mock_data["sentence1"][0]
+    assert samples_noul[0].criteria == {}
+
+    assert samples_noul[1].question_type == QuestionType.NOUL
+    assert samples_noul[1].target == "false"
+    assert samples_noul[1].state == mock_data["sentence1"][1]
+
+
+def test_jglue_jsts_converter_mock() -> None:
+    """JGLUE JSTS コンバータのモック Dataset を用いた変換テスト。"""
+    features = Features(
+        {
+            "sentence_pair_id": Value("string"),
+            "sentence1": Value("string"),
+            "sentence2": Value("string"),
+            "label": Value("float32"),
+        }
+    )
+    mock_data = {
+        "sentence_pair_id": ["sts_0", "sts_1", "sts_2", "sts_3"],
+        "sentence1": [
+            "猫が昼寝をしています。",
+            "車が道路を走っています。",
+            "料理を作っています。",
+            "雨が激しく降っています。",
+        ],
+        "sentence2": [
+            "猫が横になって眠っています。",
+            "電車が駅に到着しました。",
+            "晩ご飯を調理しています。",
+            "快晴で太陽が輝いています。",
+        ],
+        "label": [4.8, 1.2, 3.5, 0.1],  # 四捨五入後: 5, 1, 4, 0
+    }
+    ds = Dataset.from_dict(mock_data, features=features)
+
+    converter = JGlueJSTSConverter(seed=42)
+    samples = list(converter.convert_dataset(ds, split="test"))
+    assert len(samples) == 4
+
+    expected_targets = ["5", "1", "4", "0"]
+    expected_original = [4.8, 1.2, 3.5, 0.1]
+
+    for idx, sample in enumerate(samples):
+        assert sample.question_type == QuestionType.SCORE
+        assert sample.target == expected_targets[idx]
+        assert len(sample.criteria) == 6
+        assert list(sample.criteria.keys()) == ["0", "1", "2", "3", "4", "5"]
+        assert "文1: " in sample.state
+        assert "文2: " in sample.state
+        assert sample.metadata["discrete_score"] == int(expected_targets[idx])
+        assert (
+            pytest.approx(sample.metadata["original_score"], 0.01)
+            == expected_original[idx]
+        )
+
+
+def test_jglue_jcommonsenseqa_converter_mock() -> None:
+    """JGLUE JCommonsenseQA コンバータのモック Dataset を用いた変換テスト。"""
+    features = Features(
+        {
+            "q_id": Value("int64"),
+            "question": Value("string"),
+            "choice0": Value("string"),
+            "choice1": Value("string"),
+            "choice2": Value("string"),
+            "choice3": Value("string"),
+            "choice4": Value("string"),
+            "label": ClassLabel(
+                names=["choice0", "choice1", "choice2", "choice3", "choice4"]
+            ),
+        }
+    )
+    mock_data = {
+        "q_id": [101, 102],
+        "question": [
+            "主に子ども向けのもので、イラストのついた物語が書かれているものはどれ？",
+            "水分を補給するために飲むもので最も一般的なものはどれ？",
+        ],
+        "choice0": ["世界", "砂漠"],
+        "choice1": ["写真集", "塩"],
+        "choice2": ["絵本", "水"],
+        "choice3": ["論文", "油"],
+        "choice4": ["図鑑", "氷"],
+        "label": [2, 2],  # choice2
+    }
+    ds = Dataset.from_dict(mock_data, features=features)
+
+    converter = JGlueJCommonsenseQAConverter(seed=42)
+    samples = list(converter.convert_dataset(ds, split="test"))
+    assert len(samples) == 2
+
+    first = samples[0]
+    assert first.question_type == QuestionType.CHOICE
+    assert first.target == "choice2"
+    assert first.state == mock_data["question"][0]
+    assert len(first.criteria) == 5
+    assert first.criteria["choice0"] == "世界"
+    assert first.criteria["choice2"] == "絵本"
+    assert first.metadata["q_id"] == 101
+
+    second = samples[1]
+    assert second.target == "choice2"
+    assert second.criteria["choice2"] == "水"
+
+
+def test_unified_dataset_builder_jglue_registration() -> None:
+    """UnifiedDatasetBuilder における JGLUE コンバータ登録テスト。"""
+    builder = UnifiedDatasetBuilder(seed=42)
+    expected_jglue_keys = [
+        "jglue_marc_ja",
+        "jglue_marc_ja_choice",
+        "jglue_jnli",
+        "jglue_jnli_noul",
+        "jglue_jsts",
+        "jglue_jcommonsenseqa",
+    ]
+    for key in expected_jglue_keys:
+        assert key in builder.converters
+
+
+def test_jglue_marc_ja_label_type_resilience() -> None:
+    """MARC-ja においてラベル型が int、数字文字列、英語文字列のいずれでも安全に処理されるかを検証するテスト。"""
+    converter = JGlueMarcJaConverter(mode="noul", seed=42)
+
+    # 1. int 型ラベル (0: positive, 1: negative, 2: neutral)
+    ds_int = Dataset.from_dict(
+        {
+            "sentence": ["良い商品。", "悪い商品。", "普通。"],
+            "label": [0, 1, 2],
+            "review_id": ["r0", "r1", "r2"],
+        }
+    )
+    samples_int = list(converter.convert_dataset(ds_int, split="test"))
+    assert [s.target for s in samples_int] == ["true", "false"]
+
+    # 2. 数字文字列型ラベル ("0", "1", "2")
+    ds_str_num = Dataset.from_dict(
+        {
+            "sentence": ["良い商品。", "悪い商品。", "普通。"],
+            "label": ["0", "1", "2"],
+            "review_id": ["r0", "r1", "r2"],
+        }
+    )
+    samples_str_num = list(converter.convert_dataset(ds_str_num, split="test"))
+    assert [s.target for s in samples_str_num] == ["true", "false"]
+
+    # 3. 英語文字列型ラベル ("positive", "negative", "neutral")
+    ds_str_word = Dataset.from_dict(
+        {
+            "sentence": ["良い商品。", "悪い商品。", "普通。"],
+            "label": ["positive", "negative", "neutral"],
+            "review_id": ["r0", "r1", "r2"],
+        }
+    )
+    samples_str_word = list(converter.convert_dataset(ds_str_word, split="test"))
+    assert [s.target for s in samples_str_word] == ["true", "false"]
+
+
+@pytest.mark.slow
+def test_jglue_converters_real_smoke() -> None:
+    """Hugging Face から実際の JGLUE Parquet を 1 件取得し、スキーマ整合性を検証するスモークテスト。"""
+    builder = UnifiedDatasetBuilder(seed=42)
+    test_datasets = [
+        ("jglue_marc_ja", QuestionType.NOUL),
+        ("jglue_jnli", QuestionType.CHOICE),
+        ("jglue_jsts", QuestionType.SCORE),
+        ("jglue_jcommonsenseqa", QuestionType.CHOICE),
+    ]
+
+    for name, expected_type in test_datasets:
+        samples = list(
+            builder.stream_samples(
+                dataset_names=[name],
+                split="validation",
+                max_samples_per_dataset=1,
+            )
+        )
+        assert len(samples) == 1
+        sample = samples[0]
+        assert sample.question_type == expected_type
+        assert len(sample.state) > 0
+        assert len(sample.instructions) > 0
+        assert sample.metadata["actual_split"] == "validation"

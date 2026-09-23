@@ -67,6 +67,8 @@ class CalibrationRunConfig:
         batch_size (int): 検証推論時のバッチサイズ。
         seed (int): 乱数シード。
         output_dir (str): 較正結果成果物の保存先親ディレクトリ。
+        reg_lambda (float): 対数温度事前分布ペナルティの強度係数 lambda。
+        accuracy_gating_factor (float): 偶然確率 (Chance Level) に対する要求精度マージン倍率。
     """
 
     checkpoint_path: str = ""
@@ -79,6 +81,8 @@ class CalibrationRunConfig:
     batch_size: int = 16
     seed: int = 42
     output_dir: str = "runs/calibration"
+    reg_lambda: float = 0.2
+    accuracy_gating_factor: float = 1.15
 
     def to_dict(self) -> dict[str, Any]:
         """設定を辞書形式へ変換する。

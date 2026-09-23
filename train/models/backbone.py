@@ -21,15 +21,57 @@ from contract import TOKEN_OPTION_MARKER
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODERNBERT_MODEL_ID = "answerdotai/ModernBERT-base"
-"""標準の英語特化エンコーダモデル識別子。"""
+DEFAULT_MODERNBERT_JA_MODEL_ID = "sbintuitions/modernbert-ja-130m"
+"""第一推奨の日本語特化エンコーダモデル識別子。"""
+
+DEFAULT_BACKBONE_MODEL_ID = DEFAULT_MODERNBERT_JA_MODEL_ID
+"""標準のバックボーンエンコーダモデル識別子。"""
 
 DEFAULT_MMBERT_MODEL_ID = "jhu-clsp/mmBERT-base"
-"""標準の多言語エンコーダモデル識別子。"""
+"""代替の多言語エンコーダモデル識別子。"""
+
+DEFAULT_MODERNBERT_MODEL_ID = "answerdotai/ModernBERT-base"
+"""旧バージョンの英語特化エンコーダモデル識別子(後方互換用)。"""
+
+
+def initialize_token_embedding_with_normalized_centroid(
+    embedding_weight: Tensor,
+    target_token_id: int,
+    existing_vocab_size: int,
+    epsilon: float = 1e-8,
+) -> float:
+    """既存語彙埋め込みのセントロイドを正規化し、指定トークンIDの埋め込みベクトルを初期化する。
+
+    数理的背景:
+    既存語彙埋め込みの単純な平均ベクトル(セントロイド)は、各ベクトルの方向が分散しているために
+    高次元空間で相殺され、L2 ノルムが極端に縮退する。
+    そこで、セントロイドベクトルを L2 正規化して方向を取り出し、
+    既存トークン群の平均 L2 ノルムでスケーリングすることで、
+    既存埋め込み空間の中心的な指向性と健全な振幅(ノルム)を両立させた初期化を行う。
+
+    Args:
+        embedding_weight (Tensor): 埋め込み層の重みテンソル `[V, D]`。
+        target_token_id (int): 初期化対象のトークンID。
+        existing_vocab_size (int): 既存語彙数(セントロイド計算に用いるスライスの終端インデックス)。
+        epsilon (float): ゼロ除算防止用の微小値。
+
+    Returns:
+        float: スケーリングに用いた既存トークンの平均 L2 ノルム値。
+    """
+    with torch.no_grad():
+        existing_weights = embedding_weight[:existing_vocab_size]
+        centroid = existing_weights.mean(dim=0)
+        centroid_norm = torch.norm(centroid, p=2)
+
+        avg_token_norm = torch.norm(existing_weights, p=2, dim=1).mean()
+
+        normalized_centroid = (centroid / (centroid_norm + epsilon)) * avg_token_norm
+        embedding_weight[target_token_id].copy_(normalized_centroid)
+        return float(avg_token_norm.item())
 
 
 def prepare_backbone_and_tokenizer(
-    model_name_or_path: str = DEFAULT_MODERNBERT_MODEL_ID,
+    model_name_or_path: str = DEFAULT_BACKBONE_MODEL_ID,
     dtype: torch.dtype = torch.float32,
 ) -> tuple[PreTrainedModel, PreTrainedTokenizerFast, int]:
     """バックボーンエンコーダとトークナイザーを準備し、`[OP]` 特殊トークンを登録する。
@@ -38,7 +80,7 @@ def prepare_backbone_and_tokenizer(
     1. トークナイザーをロードし、語彙に `[OP]` が存在しない場合は追加登録する。
     2. バックボーンモデルをロードする。
     3. 語彙数の拡張に応じてモデルの入力埋め込み層 (`input_embeddings`) をリサイズする。
-    4. 新規追加された `[OP]` の埋め込みベクトルを、既存埋め込みベクトルの平均値で初期化し学習の安定化を図る。
+    4. 新規追加された `[OP]` の埋め込みベクトルを、既存トークンのセントロイド正規化ベクトルで初期化し学習の安定化を図る。
 
     Args:
         model_name_or_path (str): Hugging Face モデルID またはローカルディレクトリパス。
@@ -99,15 +141,17 @@ def prepare_backbone_and_tokenizer(
         )
         model.resize_token_embeddings(current_vocab_size)
 
-        with torch.no_grad():
-            new_embeddings = cast(nn.Embedding, model.get_input_embeddings())
-            weights = new_embeddings.weight
-            mean_vector = weights[:previous_vocab_size].mean(dim=0)
-            weights[op_token_id].copy_(mean_vector)
-            logger.info(
-                "[OP] トークン(ID: %d)の埋め込みを既存埋め込みの平均ベクトルで初期化しました。",
-                op_token_id,
-            )
+        new_embeddings = cast(nn.Embedding, model.get_input_embeddings())
+        target_norm = initialize_token_embedding_with_normalized_centroid(
+            embedding_weight=new_embeddings.weight,
+            target_token_id=op_token_id,
+            existing_vocab_size=previous_vocab_size,
+        )
+        logger.info(
+            "[OP] トークン(ID: %d)の埋め込みを既存トークンのセントロイド正規化ベクトルで初期化しました(目標ノルム: %.4f)。",
+            op_token_id,
+            target_norm,
+        )
 
     return model, tokenizer, op_token_id
 
