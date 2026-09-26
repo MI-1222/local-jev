@@ -148,6 +148,18 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Choice 型選択肢順序シャッフル不変性 (位置バイアス) を評価するかどうか。",
     )
+    parser.add_argument(
+        "--max-sequence-length",
+        type=int,
+        default=None,
+        help="トークナイズ時の最大系列長。",
+    )
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="勾配チェックポインティングを有効化して VRAM/メモリ消費を抑制するかどうか。",
+    )
 
     return parser.parse_args(args)
 
@@ -209,6 +221,10 @@ def build_config_from_args(parsed_args: argparse.Namespace) -> SFTConfig:
         config.eval_metric = parsed_args.eval_metric
     if parsed_args.evaluate_position_bias is not None:
         config.evaluate_position_bias = parsed_args.evaluate_position_bias
+    if parsed_args.max_sequence_length is not None:
+        config.max_sequence_length = parsed_args.max_sequence_length
+    if parsed_args.gradient_checkpointing is not None:
+        config.gradient_checkpointing = parsed_args.gradient_checkpointing
 
     return config
 

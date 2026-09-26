@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODERNBERT_JA_MODEL_ID = "sbintuitions/modernbert-ja-130m"
 """第一推奨の日本語特化エンコーダモデル識別子。"""
 
+DEFAULT_MODERNBERT_JA_310M_MODEL_ID = "sbintuitions/modernbert-ja-310m"
+"""上位の表現力を持つ日本語特化スケールアップエンコーダモデル識別子。"""
+
 DEFAULT_BACKBONE_MODEL_ID = DEFAULT_MODERNBERT_JA_MODEL_ID
 """標準のバックボーンエンコーダモデル識別子。"""
 
