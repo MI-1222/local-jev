@@ -1,6 +1,6 @@
 [project]
 name = "local-jev-train"
-version = "0.2.3"
+version = "0.2.4"
 description = "Jev train"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -14,6 +14,7 @@ dependencies = [
     "transformers>=5.17.0",
     "pyyaml>=6.0.2",
     "scipy>=1.18.1",
+    "matplotlib>=3.10.0",
 ]
 
 [dependency-groups]

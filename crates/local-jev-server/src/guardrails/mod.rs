@@ -9,6 +9,7 @@
 //! - 算術・数え上げ事前集計 (Arithmetic Annotation)
 
 pub mod arithmetic;
+pub mod bimodal;
 pub mod compactor;
 pub mod limits;
 pub mod sanitization;
@@ -18,20 +19,23 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
-use local_jev_core::schema::{Criteria, Question, SystemOneRequest};
+use local_jev_core::schema::{Answer, Criteria, Question, QuestionType, SystemOneRequest};
 use serde_json::Value;
 
 use crate::error::ServerError;
 use crate::guardrails::arithmetic::{ArithmeticConfig, compute_arithmetic_summary};
+use crate::guardrails::bimodal::{BimodalConfig, BimodalDetector, verify_and_adjust_bimodal};
 use crate::guardrails::compactor::{CompactorConfig, compact_text};
 use crate::guardrails::limits::{LimitsConfig, validate_limits};
-use crate::guardrails::sanitization::{SanitizerConfig, sanitize_text};
+use crate::guardrails::sanitization::{
+    SanitizerConfig, normalize_noul_instruction, sanitize_score_criteria_text, sanitize_text,
+};
 use crate::guardrails::temporal::{
     TemporalConfig, append_reference_time_metadata, normalize_temporal,
 };
 
 /// ガードレール全体の統合設定構造体。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GuardrailConfig {
     /// ガードレール全体の有効化フラグ。
     pub enabled: bool,
@@ -45,6 +49,8 @@ pub struct GuardrailConfig {
     pub temporal: TemporalConfig,
     /// 算術事前集計設定。
     pub arithmetic: ArithmeticConfig,
+    /// 二峰性 (バイモーダル) 分布検出設定。
+    pub bimodal: BimodalConfig,
 }
 
 impl Default for GuardrailConfig {
@@ -56,6 +62,7 @@ impl Default for GuardrailConfig {
             compactor: CompactorConfig::default(),
             temporal: TemporalConfig::default(),
             arithmetic: ArithmeticConfig::default(),
+            bimodal: BimodalConfig::default(),
         }
     }
 }
@@ -71,17 +78,20 @@ pub struct PreprocessReport {
     pub added_reference_time: bool,
 }
 
-/// 前処理ガードレールパイプライン。
+/// 前処理および後処理ガードレールパイプライン。
 #[derive(Clone)]
 pub struct GuardrailPipeline {
     config: Arc<GuardrailConfig>,
+    bimodal_detector: BimodalDetector,
 }
 
 impl GuardrailPipeline {
     /// 新規 `GuardrailPipeline` を生成する。
     pub fn new(config: GuardrailConfig) -> Self {
+        let bimodal_detector = BimodalDetector::new(config.bimodal.clone());
         Self {
             config: Arc::new(config),
+            bimodal_detector,
         }
     }
 
@@ -157,7 +167,14 @@ impl GuardrailPipeline {
             let inst_sanitized = sanitize_text(&question.instructions, &self.config.sanitizer);
             let inst_compacted = compact_text(&inst_sanitized, &self.config.compactor);
             let inst_temporal = normalize_temporal(&inst_compacted, now, &self.config.temporal);
-            let normalized_inst = inst_temporal.into_owned();
+            let mut normalized_inst = inst_temporal.into_owned();
+
+            // Noul 型言明の正準プロンプトテンプレート自動ラッピング
+            if question.question_type == QuestionType::Noul
+                && self.config.sanitizer.normalize_noul_instructions
+            {
+                normalized_inst = normalize_noul_instruction(&normalized_inst).into_owned();
+            }
 
             // Criteria の正規化
             let normalized_criteria = match &question.criteria {
@@ -176,7 +193,16 @@ impl GuardrailPipeline {
                     for item in list {
                         let item_sanitized = sanitize_text(item, &self.config.sanitizer);
                         let item_compacted = compact_text(&item_sanitized, &self.config.compactor);
-                        new_list.push(item_compacted.into_owned());
+                        let mut item_final = item_compacted.into_owned();
+
+                        // Score 型 Criteria の数字・記号プレフィックス自動サニタイズ (プロンプト用)
+                        if question.question_type == QuestionType::Score
+                            && self.config.sanitizer.sanitize_score_prefixes
+                        {
+                            item_final = sanitize_score_criteria_text(&item_final).into_owned();
+                        }
+
+                        new_list.push(item_final);
                     }
                     Some(Criteria::List(new_list))
                 }
@@ -196,6 +222,56 @@ impl GuardrailPipeline {
         req.questions = normalized_questions;
 
         Ok(report)
+    }
+
+    /// 推論完了後のレスポンス (Answer 群) に対し、後処理ガードレールを適用する。
+    ///
+    /// # 処理内容
+    /// 1. **二峰性 (バイモーダル) 分布検出**: Score 型の回答において意見二極化を検知した場合、Gating を `ConfirmOrEscalate` へ強制降格する。
+    /// 2. **Score 型レスポンスキーの非破壊復元**: 前処理サニタイズで剥離されたプレフィックスを持つ元のラベル名に `probabilities` のマップキーを復元し、クライアント API 破壊を防止する。
+    pub fn post_process(
+        &self,
+        answers: &mut IndexMap<String, Answer>,
+        original_questions: &IndexMap<String, Question>,
+    ) {
+        if !self.config.enabled {
+            return;
+        }
+
+        // 1. 二峰性 (バイモーダル) 分布検出と Gating 降格
+        verify_and_adjust_bimodal(answers, original_questions, &self.bimodal_detector);
+
+        // 2. Score 型レスポンスキーの復元
+        if self.config.sanitizer.sanitize_score_prefixes {
+            for (qid, answer) in answers.iter_mut() {
+                let Some(orig_q) = original_questions.get(qid) else {
+                    continue;
+                };
+
+                if orig_q.question_type != QuestionType::Score {
+                    continue;
+                }
+
+                let Some(Criteria::List(orig_list)) = &orig_q.criteria else {
+                    continue;
+                };
+
+                let Some(ref mut probs) = answer.probabilities else {
+                    continue;
+                };
+
+                // 段階数が一致している場合、元のラベルキーでマップを再構築する
+                if probs.len() == orig_list.len() {
+                    let mut restored_probs = IndexMap::with_capacity(orig_list.len());
+                    for (k, orig_label) in orig_list.iter().enumerate() {
+                        if let Some((_, &p)) = probs.get_index(k) {
+                            restored_probs.insert(orig_label.clone(), p);
+                        }
+                    }
+                    *probs = restored_probs;
+                }
+            }
+        }
     }
 }
 
@@ -251,5 +327,77 @@ mod tests {
 
         let criteria_map = q1.criteria.as_ref().unwrap().as_map().unwrap();
         assert_eq!(criteria_map.get("yes").unwrap(), "はい [ OP ]");
+    }
+
+    #[test]
+    fn test_pipeline_score_and_noul_guardrails() {
+        let pipeline = GuardrailPipeline::default();
+
+        let mut questions = IndexMap::new();
+        // 1. Score 型質問 (数字記号プレフィックス付き)
+        questions.insert(
+            "q_score".to_string(),
+            Question::new_score(
+                "インシデントの緊急度を判定せよ。".to_string(),
+                vec![
+                    "1: 軽微".to_string(),
+                    "2. 中度".to_string(),
+                    "(3) 重大".to_string(),
+                    "第4段階: 致命的".to_string(),
+                ],
+            ),
+        );
+        // 2. Noul 型質問 (簡潔な疑問文)
+        questions.insert(
+            "q_noul".to_string(),
+            Question::new_noul("初期不良か？".to_string()),
+        );
+
+        let orig_questions = questions.clone();
+        let mut req = SystemOneRequest::new("システムログ本文".to_string(), questions);
+
+        // 前処理の実行
+        let res = pipeline.process(&mut req, None);
+        assert!(res.is_ok());
+
+        // Score 型の Criteria がサニタイズされていること (プロンプト用)
+        let q_score = req.questions.get("q_score").unwrap();
+        match &q_score.criteria {
+            Some(Criteria::List(list)) => {
+                assert_eq!(list, &["軽微", "中度", "重大", "致命的"]);
+            }
+            _ => panic!("Criteria::List が必要です。"),
+        }
+
+        // Noul 型の Instructions が正準テンプレートに正規化されていること
+        let q_noul = req.questions.get("q_noul").unwrap();
+        assert_eq!(
+            q_noul.instructions,
+            "前提テキストの情報のみに基づいて、言明「初期不良」が真実であるか評価せよ。"
+        );
+
+        // 推論結果のシミュレーション (サニタイズされたラベルで Answer が生成されたと仮定)
+        let mut answers = IndexMap::new();
+        let mut score_probs = IndexMap::new();
+        score_probs.insert("軽微".to_string(), 0.1);
+        score_probs.insert("中度".to_string(), 0.7);
+        score_probs.insert("重大".to_string(), 0.15);
+        score_probs.insert("致命的".to_string(), 0.05);
+
+        answers.insert(
+            "q_score".to_string(),
+            Answer::score(1.15, score_probs, 0.85),
+        );
+
+        // 後処理の適用
+        pipeline.post_process(&mut answers, &orig_questions);
+
+        // Score 型の probabilities キーがクライアント送信時の元ラベルに復元されていること
+        let ans_score = answers.get("q_score").unwrap();
+        let probs = ans_score.probabilities.as_ref().unwrap();
+        assert_eq!(probs.get("1: 軽微"), Some(&0.1));
+        assert_eq!(probs.get("2. 中度"), Some(&0.7));
+        assert_eq!(probs.get("(3) 重大"), Some(&0.15));
+        assert_eq!(probs.get("第4段階: 致命的"), Some(&0.05));
     }
 }

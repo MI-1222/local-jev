@@ -314,3 +314,191 @@ async fn test_guardrail_chunked_batch_execution() {
     assert!(resp.answers.contains_key("q3"));
     assert!(resp.answers.contains_key("q4"));
 }
+
+#[tokio::test]
+async fn test_guardrail_score_prefix_sanitization_and_key_restoration() {
+    let state = match init_test_app_state_with_guardrail(GuardrailConfig::default(), 16) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let app = create_router(state, None);
+
+    // 1. 記号プレフィックス付きリクエスト
+    let mut questions_prefixed = IndexMap::new();
+    questions_prefixed.insert(
+        "q_score".to_string(),
+        Question::new_score(
+            "インシデントの緊急度を判定せよ。".to_string(),
+            vec![
+                "1: 軽微".to_string(),
+                "2. 中度".to_string(),
+                "(3) 重大".to_string(),
+                "第4段階: 致命的".to_string(),
+            ],
+        ),
+    );
+
+    let req_prefixed = SystemOneRequest::new(
+        Value::String(
+            "全社基底データベースへの接続がタイムアウトし、サービスが全停止しています。"
+                .to_string(),
+        ),
+        questions_prefixed,
+    );
+
+    let res_prefixed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/systemone")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req_prefixed).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res_prefixed.status(), StatusCode::OK);
+    let bytes = res_prefixed.into_body().collect().await.unwrap().to_bytes();
+    let resp_prefixed: SystemOneResponse = serde_json::from_slice(&bytes).unwrap();
+
+    let ans_prefixed = resp_prefixed.answers.get("q_score").unwrap();
+    let probs_prefixed = ans_prefixed.probabilities.as_ref().unwrap();
+
+    // クライアントがリクエストした元ラベルキーがレスポンスで非破壊維持されていること
+    assert!(probs_prefixed.contains_key("1: 軽微"));
+    assert!(probs_prefixed.contains_key("2. 中度"));
+    assert!(probs_prefixed.contains_key("(3) 重大"));
+    assert!(probs_prefixed.contains_key("第4段階: 致命的"));
+
+    // 2. 記号プレフィックスなしの純粋ラベルリクエスト
+    let mut questions_clean = IndexMap::new();
+    questions_clean.insert(
+        "q_score".to_string(),
+        Question::new_score(
+            "インシデントの緊急度を判定せよ。".to_string(),
+            vec![
+                "軽微".to_string(),
+                "中度".to_string(),
+                "重大".to_string(),
+                "致命的".to_string(),
+            ],
+        ),
+    );
+
+    let req_clean = SystemOneRequest::new(
+        Value::String(
+            "全社基底データベースへの接続がタイムアウトし、サービスが全停止しています。"
+                .to_string(),
+        ),
+        questions_clean,
+    );
+
+    let res_clean = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/systemone")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req_clean).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res_clean.status(), StatusCode::OK);
+    let bytes = res_clean.into_body().collect().await.unwrap().to_bytes();
+    let resp_clean: SystemOneResponse = serde_json::from_slice(&bytes).unwrap();
+
+    let ans_clean = resp_clean.answers.get("q_score").unwrap();
+
+    // サニタイズ前処理により、プレフィックス付きと純粋ラベル時で同一のスコア値・確率値が得られること (記号誘発バイアスゼロ化)
+    assert!(
+        (ans_prefixed.score.unwrap() - ans_clean.score.unwrap()).abs() < 1e-4,
+        "プレフィックス付与時と純粋ラベル時でスコアが一致すること: prefixed={}, clean={}",
+        ans_prefixed.score.unwrap(),
+        ans_clean.score.unwrap()
+    );
+}
+
+#[tokio::test]
+async fn test_guardrail_noul_instruction_normalization() {
+    let state = match init_test_app_state_with_guardrail(GuardrailConfig::default(), 16) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let app = create_router(state, None);
+
+    let context = "商品到着後すぐに電源を入れましたが、通電ランプが点灯せず起動しません。初期不良の可能性があります。";
+
+    // 1. 簡潔な言明 (疑問符付き)
+    let mut questions_simple = IndexMap::new();
+    questions_simple.insert(
+        "q_noul".to_string(),
+        Question::new_noul("初期不良か？".to_string()),
+    );
+    let req_simple = SystemOneRequest::new(Value::String(context.to_string()), questions_simple);
+
+    let res_simple = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/systemone")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req_simple).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res_simple.status(), StatusCode::OK);
+    let bytes = res_simple.into_body().collect().await.unwrap().to_bytes();
+    let resp_simple: SystemOneResponse = serde_json::from_slice(&bytes).unwrap();
+    let ans_simple = resp_simple.answers.get("q_noul").unwrap();
+
+    // 2. 完全な正準テンプレート形式
+    let mut questions_canonical = IndexMap::new();
+    questions_canonical.insert(
+        "q_noul".to_string(),
+        Question::new_noul(
+            "前提テキストの情報のみに基づいて、言明「初期不良」が真実であるか評価せよ。"
+                .to_string(),
+        ),
+    );
+    let req_canonical =
+        SystemOneRequest::new(Value::String(context.to_string()), questions_canonical);
+
+    let res_canonical = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/systemone")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req_canonical).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res_canonical.status(), StatusCode::OK);
+    let bytes = res_canonical
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let resp_canonical: SystemOneResponse = serde_json::from_slice(&bytes).unwrap();
+    let ans_canonical = resp_canonical.answers.get("q_noul").unwrap();
+
+    // 正規化ラッピングにより、簡潔言明時と完全指定時で同一の判定確率が得られること
+    assert!(
+        (ans_simple.noul.unwrap() - ans_canonical.noul.unwrap()).abs() < 1e-4,
+        "簡潔言明と完全指定時で真偽確率が一致すること: simple={}, canonical={}",
+        ans_simple.noul.unwrap(),
+        ans_canonical.noul.unwrap()
+    );
+}

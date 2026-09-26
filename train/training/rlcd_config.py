@@ -23,13 +23,22 @@ class RLCDConfig:
     """RLCD 強化学習および較正ポリシー更新の包括的設定 dataclass。
 
     Attributes:
+        optimization_mode (str): 最適化方式 ("grpo" または "listwise_dpo")。
         num_generations (int): 同一サンプルから生成する摂動ロジットのグループサイズ G。
         perturbation_std (float): ロジット空間に注入するガウシアンノイズの標準偏差 sigma。
         clip_range (float): サロゲートポリシー目的関数のクリップ範囲 epsilon。
         kl_coeff (float): 参照モデル (SFT モデル) からの乖離を抑制する KL ペナルティ係数 beta_KL。
         entropy_coeff (float): 確信度 100% 張り付きを抑止するエントロピーボーナス係数 beta_ent。
         sampling_temperature (float): ロジット摂動後の Softmax に適用するサンプリング温度 tau。
-        learning_rate (float): バックボーンおよび決定ヘッドのポリシー更新学習率。
+        sft_aux_coeff (float): SFT 補助分類損失のブレンド係数 alpha_sft。
+        dpo_beta (float): Listwise DPO における暗黙報酬スケーリング係数 beta。
+        dpo_temperature (float): Listwise DPO における Plackett-Luce 温度パラメータ。
+        learning_rate (float): 基本学習率。
+        lr_head (float | None): デシジョンヘッドの個別学習率 (未指定時は learning_rate)。
+        lr_backbone (float | None): バックボーンの個別学習率 (未指定時は learning_rate * backbone_lr_ratio)。
+        lr_embed (float | None): 埋め込み層の個別学習率 (未指定時は learning_rate * 0.5)。
+        freeze_backbone (bool): バックボーンの重みを完全凍結するかどうかのフラグ。
+        backbone_lr_ratio (float): ヘッド学習率に対するバックボーン学習率の比率。
         weight_decay (float): AdamW オプティマイザの重み減衰率。
         warmup_ratio (float): コサイン学習率スケジューラのウォームアップ割合。
         max_grad_norm (float): 勾配クリッピングの最大 L2 ノルム閾値。
@@ -41,13 +50,22 @@ class RLCDConfig:
         scoring_config (ScoringConfig): 報酬計算に使用する厳密適格スコアリング規則設定。
     """
 
+    optimization_mode: str = "grpo"
     num_generations: int = 4
     perturbation_std: float = 0.10
     clip_range: float = 0.20
     kl_coeff: float = 0.05
     entropy_coeff: float = 0.01
     sampling_temperature: float = 1.0
+    sft_aux_coeff: float = 0.0
+    dpo_beta: float = 0.10
+    dpo_temperature: float = 1.0
     learning_rate: float = 2e-5
+    lr_head: float | None = None
+    lr_backbone: float | None = None
+    lr_embed: float | None = None
+    freeze_backbone: bool = False
+    backbone_lr_ratio: float = 0.10
     weight_decay: float = 0.01
     warmup_ratio: float = 0.10
     max_grad_norm: float = 1.0
@@ -57,6 +75,16 @@ class RLCDConfig:
     seed: int = 42
     output_dir: str = "runs/rlcd"
     scoring_config: ScoringConfig = field(default_factory=ScoringConfig)
+
+    def __post_init__(self) -> None:
+        """設定パラメータの妥当性を検証する。"""
+        valid_modes = {"grpo", "listwise_dpo"}
+        if self.optimization_mode.lower() not in valid_modes:
+            raise ValueError(
+                f"無効な optimization_mode です: {self.optimization_mode}。"
+                f"利用可能なモード: {sorted(valid_modes)}。"
+            )
+        self.optimization_mode = self.optimization_mode.lower()
 
     def to_dict(self) -> dict[str, Any]:
         """設定を辞書型に変換する。

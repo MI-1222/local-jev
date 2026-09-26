@@ -22,7 +22,9 @@ class ScoringConfig:
     Attributes:
         alpha (float): Choice / Noul における対数スコア比率 (1 - alpha が球面スコア比率)。
         beta (float): Score における RPS 比率 (1 - beta が対数スコア比率)。
-        eps (float): 対数スコア計算時の確率クリッピング下限値。
+        brier_weight (float): 複合報酬における Brier スコア比率。
+        min_log_score (float): 対数スコア計算時の下限クリッピング値 (-10.0)。
+        eps (float): 対数スコア計算時の確率クリッピング微小値。
         eps_div (float): 球面スコア計算時のゼロ除算防止微小値。
         temperature (float): ロジットに適用する温度パラメータ tau。
         normalize_log (bool): 対数スコアを [0, 1] 区間に線形スケーリングするかどうかのフラグ。
@@ -31,6 +33,8 @@ class ScoringConfig:
 
     alpha: float = 0.5
     beta: float = 0.7
+    brier_weight: float = 0.0
+    min_log_score: float = -10.0
     eps: float = 1e-6
     eps_div: float = 1e-12
     temperature: float = 1.0

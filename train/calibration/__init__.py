@@ -12,13 +12,25 @@ from calibration.config import (
     CalibrationRunConfig,
     matches_bucket_expr,
 )
+from calibration.diagram import (
+    export_all_diagrams,
+    plot_calibration_comparison,
+    plot_reliability_diagram,
+)
 from calibration.evaluator import (
     CalibrationEvaluator,
     compute_accuracy,
+    compute_accuracy_at_confidence,
+    compute_adaptive_ece,
+    compute_binary_diagram_data,
+    compute_binary_ece,
     compute_brier_score,
     compute_ece,
+    compute_expected_score_mae,
     compute_masked_nll,
     compute_reliability_diagram_data,
+    compute_rps,
+    compute_wilson_score_interval,
     get_masked_probabilities,
 )
 from calibration.optimizer import (
@@ -27,22 +39,38 @@ from calibration.optimizer import (
     collect_env_metadata,
     compute_bucket_chance_level,
 )
+from calibration.reporter import (
+    CalibrationReporter,
+    evaluate_exit_criteria,
+)
 
 __all__ = [
     "CHOICE_BUCKETS",
     "NOUL_BUCKET",
     "SCORE_BUCKETS",
     "CalibrationEvaluator",
+    "CalibrationReporter",
     "CalibrationRunConfig",
     "LogitCache",
     "TemperatureOptimizer",
     "collect_env_metadata",
     "compute_accuracy",
+    "compute_accuracy_at_confidence",
+    "compute_adaptive_ece",
+    "compute_binary_diagram_data",
+    "compute_binary_ece",
     "compute_brier_score",
     "compute_bucket_chance_level",
     "compute_ece",
+    "compute_expected_score_mae",
     "compute_masked_nll",
     "compute_reliability_diagram_data",
+    "compute_rps",
+    "compute_wilson_score_interval",
+    "evaluate_exit_criteria",
+    "export_all_diagrams",
     "get_masked_probabilities",
     "matches_bucket_expr",
+    "plot_calibration_comparison",
+    "plot_reliability_diagram",
 ]

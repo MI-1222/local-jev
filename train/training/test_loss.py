@@ -13,10 +13,13 @@ from data.schema import QuestionType
 from models.decision_head import JevDecisionModel
 from training.loss import (
     AsymmetricBCELoss,
+    AsymmetricLoss,
     EarthMoverDistanceLoss,
     InfoNCEContrastiveLoss,
     JevMultiTaskLoss,
     LabelSmoothedFocalLoss,
+    RankedProbabilityScoreLoss,
+    SymmetryRegularizationLoss,
 )
 
 
@@ -380,3 +383,68 @@ def test_jev_decision_model_features_return() -> None:
     assert logits_feat.shape == (2, 3)
     assert state_repr.shape == (2, 16)
     assert option_vectors.shape == (2, 3, 16)
+
+
+def test_ranked_probability_score_loss() -> None:
+    """RankedProbabilityScoreLoss (RPS) の順序距離単調性および計算整合性を検証する。"""
+    loss_fn = RankedProbabilityScoreLoss()
+    label = torch.tensor([2], dtype=torch.long)
+
+    # 5段階評価: 完全一致、隣接誤答、遠隔誤答
+    logits_exact = torch.tensor([-5.0, -5.0, 10.0, -5.0, -5.0], dtype=torch.float32)
+    logits_near = torch.tensor([-5.0, 10.0, -5.0, -5.0, -5.0], dtype=torch.float32)
+    logits_far = torch.tensor([10.0, -5.0, -5.0, -5.0, -5.0], dtype=torch.float32)
+
+    loss_exact = loss_fn(logits_exact, label)
+    loss_near = loss_fn(logits_near, label)
+    loss_far = loss_fn(logits_far, label)
+
+    # 厳密な単調性: loss_exact < loss_near < loss_far
+    assert loss_exact < loss_near < loss_far
+
+    # 確率入力 (is_probs=True) のテスト
+    probs_exact = torch.tensor([0.0, 0.0, 1.0, 0.0, 0.0], dtype=torch.float32)
+    loss_prob_exact = loss_fn(probs_exact, label, is_probs=True)
+    assert torch.isclose(loss_prob_exact, torch.tensor(0.0), atol=1e-6)
+
+
+def test_asymmetric_loss_hard_thresholding() -> None:
+    """AsymmetricLoss (ASL) における容易な負例ハードマージン切り捨ての検証。"""
+    loss_fn = AsymmetricLoss(gamma_neg=4.0, gamma_pos=1.0, clip_margin=0.05, eps=1e-8)
+
+    label_negative = torch.tensor([1], dtype=torch.long)  # 負例 (False: target=0.0)
+
+    # 容易な負例: delta_z = -10.0 -> p = sigmoid(-10) ≈ 4.5e-5 < clip_margin (0.05)
+    # p_m = clamp(p - 0.05, min=0.0) = 0.0 となり、負例損失が完全に 0 になるはず
+    logits_easy_neg = torch.tensor([[-10.0, 0.0]], dtype=torch.float32)
+    loss_easy_neg = loss_fn(logits_easy_neg, label_negative)
+    assert torch.isclose(loss_easy_neg, torch.tensor(0.0), atol=1e-6)
+
+    # 境界付近の負例: delta_z = 0.0 -> p = 0.5 > 0.05 -> 損失が発生する
+    logits_hard_neg = torch.tensor([[0.0, 0.0]], dtype=torch.float32)
+    loss_hard_neg = loss_fn(logits_hard_neg, label_negative)
+    assert loss_hard_neg > 0.0
+
+    # 正例 (True: target=1.0) の損失
+    label_positive = torch.tensor([0], dtype=torch.long)
+    loss_pos = loss_fn(logits_hard_neg, label_positive)
+    assert loss_pos > 0.0
+
+
+def test_symmetry_regularization_loss() -> None:
+    """SymmetryRegularizationLoss における置換不変性 KL 損失の計算整合性を検証する。"""
+    loss_fn = SymmetryRegularizationLoss()
+
+    orig_logits = torch.tensor([[2.0, 1.0, 0.0]], dtype=torch.float32)
+    perm_indices = torch.tensor([[2, 0, 1]], dtype=torch.long)
+    op_mask = torch.tensor([[True, True, True]], dtype=torch.bool)
+
+    # 完全に置換同変なロジットの場合、KL 損失は 0.0
+    perm_logits_ideal = torch.tensor([[0.0, 2.0, 1.0]], dtype=torch.float32)
+    loss_zero = loss_fn(orig_logits, perm_logits_ideal, perm_indices, op_mask)
+    assert torch.isclose(loss_zero, torch.tensor(0.0), atol=1e-5)
+
+    # 偏りのあるロジットの場合、KL 損失は正値
+    perm_logits_biased = torch.tensor([[2.0, 1.0, 0.0]], dtype=torch.float32)
+    loss_biased = loss_fn(orig_logits, perm_logits_biased, perm_indices, op_mask)
+    assert loss_biased > 0.0

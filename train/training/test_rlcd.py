@@ -21,12 +21,14 @@ from training.rlcd_loss import (
     RLCDLoss,
     compute_entropy,
     compute_group_advantages,
+    compute_listwise_dpo_loss,
     compute_masked_kl_divergence,
     sample_perturbed_logits,
 )
 from training.rlcd_trainer import (
     RLCDTrainer,
     compute_expected_calibration_error,
+    create_rlcd_optimizer_param_groups,
 )
 from training.scoring_config import ScoringConfig
 
@@ -409,4 +411,229 @@ def test_rlcd_trainer_step() -> None:
         assert (Path(tmp_dir) / "rlcd_config.json").exists()
         assert (Path(tmp_dir) / "run_metadata.json").exists()
         assert (Path(tmp_dir) / "history.json").exists()
+        assert (Path(tmp_dir) / "best_checkpoint" / "model.pt").exists()
+
+
+def test_rlcd_config_validation_and_new_options() -> None:
+    """RLCDConfig の新規フィールドおよび optimization_mode のバリデーションを検証する。"""
+    config = RLCDConfig(
+        optimization_mode="listwise_dpo",
+        dpo_beta=0.25,
+        dpo_temperature=1.5,
+        sft_aux_coeff=0.1,
+        freeze_backbone=True,
+        backbone_lr_ratio=0.05,
+    )
+    assert config.optimization_mode == "listwise_dpo"
+    assert config.dpo_beta == pytest.approx(0.25)
+    assert config.freeze_backbone is True
+    assert config.backbone_lr_ratio == pytest.approx(0.05)
+
+    # 不正な optimization_mode で例外が発生するか
+    with pytest.raises(ValueError, match="無効な optimization_mode です"):
+        RLCDConfig(optimization_mode="invalid_mode")
+
+
+def test_compute_listwise_dpo_loss_basic() -> None:
+    """Listwise DPO 損失計算の数理、パディングマスク、および勾配方向を検証する。"""
+    policy_logits = torch.tensor(
+        [
+            [1.0, 0.0, -1.0, -100.0],
+            [0.5, 1.5, -0.5, -100.0],
+        ],
+        requires_grad=True,
+    )
+    ref_logits = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, -100.0],
+            [0.0, 0.0, 0.0, -100.0],
+        ]
+    )
+    labels = torch.tensor([0, 1])  # サンプル 0 は 0 番、サンプル 1 は 1 番が正解
+    op_mask = torch.tensor(
+        [
+            [True, True, True, False],
+            [True, True, True, False],
+        ]
+    )
+
+    loss, metrics = compute_listwise_dpo_loss(
+        policy_logits=policy_logits,
+        ref_logits=ref_logits,
+        labels=labels,
+        op_mask=op_mask,
+        beta=0.5,
+        temperature=1.0,
+    )
+
+    assert loss.dim() == 0
+    assert not torch.isnan(loss)
+    assert not torch.isinf(loss)
+    assert "implicit_reward_target" in metrics
+    assert "reward_margin" in metrics
+    assert metrics["reward_margin"].item() > 0.0
+
+    # 逆伝播テスト: 正解ターゲットのロジットに対する勾配が負 (ロジット増大で損失減少) であること
+    loss.backward()
+    assert policy_logits.grad is not None
+    assert policy_logits.grad[0, 0] < 0.0
+    assert policy_logits.grad[1, 1] < 0.0
+    # パディング位置の勾配は厳密に 0 であること
+    assert policy_logits.grad[0, 3].item() == 0.0
+    assert policy_logits.grad[1, 3].item() == 0.0
+
+
+def test_compute_listwise_dpo_loss_rankings() -> None:
+    """明示的な選好順序 rankings テンソルを与えた場合の Plackett-Luce 損失を検証する。"""
+    batch_size = 2
+    num_options = 3
+
+    policy_logits = torch.randn(batch_size, num_options, requires_grad=True)
+    ref_logits = torch.zeros(batch_size, num_options)
+    labels = torch.tensor([0, 1])
+    op_mask = torch.ones(batch_size, num_options, dtype=torch.bool)
+    # 明示的な選好順序 (上位候補インデックスリスト)
+    rankings = torch.tensor(
+        [
+            [0, 1, 2],  # 0 > 1 > 2
+            [1, 2, 0],  # 1 > 2 > 0
+        ]
+    )
+
+    loss, metrics = compute_listwise_dpo_loss(
+        policy_logits=policy_logits,
+        ref_logits=ref_logits,
+        labels=labels,
+        op_mask=op_mask,
+        beta=0.2,
+        temperature=1.0,
+        rankings=rankings,
+    )
+
+    assert loss.dim() == 0
+    assert not torch.isnan(loss)
+    assert "loss_dpo" in metrics
+    loss.backward()
+    assert policy_logits.grad is not None
+
+
+def test_rlcd_loss_listwise_dpo_mode() -> None:
+    """RLCDLoss が optimization_mode='listwise_dpo' で正常に動作することを検証する。"""
+    batch_size = 3
+    num_options = 4
+
+    policy_logits = torch.randn(batch_size, num_options, requires_grad=True)
+    ref_logits = torch.randn(batch_size, num_options)
+    labels = torch.tensor([1, 0, 2])
+    op_mask = torch.tensor(
+        [
+            [True, True, True, False],
+            [True, True, True, True],
+            [True, True, True, False],
+        ]
+    )
+
+    config = RLCDConfig(
+        optimization_mode="listwise_dpo",
+        dpo_beta=0.2,
+        kl_coeff=0.03,
+        entropy_coeff=0.01,
+        sft_aux_coeff=0.1,
+    )
+    loss_fn = RLCDLoss(config=config)
+
+    loss, metrics = loss_fn(
+        policy_logits=policy_logits,
+        ref_logits=ref_logits,
+        labels=labels,
+        op_mask=op_mask,
+        question_types=["choice", "choice", "score"],
+    )
+
+    assert loss.dim() == 0
+    assert not torch.isnan(loss)
+    assert "loss_dpo" in metrics
+    assert "loss_kl" in metrics
+    assert "loss_sft_aux" in metrics
+
+    loss.backward()
+    assert policy_logits.grad is not None
+    assert not torch.isnan(policy_logits.grad).any()
+
+
+def test_create_rlcd_optimizer_param_groups() -> None:
+    """RLCD の層別学習率およびバックボーン凍結制御を検証する。"""
+    model = DummyJevModel()
+    config = RLCDConfig(
+        learning_rate=1e-4,
+        backbone_lr_ratio=0.2,
+        weight_decay=0.01,
+        freeze_backbone=False,
+    )
+
+    groups = create_rlcd_optimizer_param_groups(model=model, config=config)
+    assert len(groups) >= 2
+
+    # freeze_backbone=True の場合
+    frozen_model = DummyJevModel()
+    for name, param in frozen_model.named_parameters():
+        if not name.startswith(("decision_head", "gather_layer")):
+            param.requires_grad = False
+
+    frozen_groups = create_rlcd_optimizer_param_groups(
+        model=frozen_model, config=config
+    )
+    # 凍結されたパラメータはグループに含まれない
+    all_param_count = sum(len(g["params"]) for g in frozen_groups)
+    assert all_param_count == sum(
+        1 for p in frozen_model.parameters() if p.requires_grad
+    )
+
+
+def test_rlcd_trainer_step_listwise_dpo() -> None:
+    """RLCDTrainer による Listwise DPO モードでの 1 エポック実行を検証する。"""
+    torch.manual_seed(42)
+
+    policy_model = DummyJevModel()
+    ref_model = DummyJevModel()
+
+    batch_size = 2
+    seq_len = 8
+
+    batches = [
+        {
+            "input_ids": torch.randint(0, 50, (batch_size, seq_len)),
+            "attention_mask": torch.ones(batch_size, seq_len, dtype=torch.long),
+            "op_indices": torch.tensor([[1, 3, 5], [2, 4, 6]]),
+            "op_mask": torch.tensor([[True, True, False], [True, True, True]]),
+            "labels": torch.tensor([0, 1]),
+            "question_types": ["choice", "choice"],
+            "rankings": torch.tensor([[0, 1, 2], [1, 2, 0]]),
+            "is_negatives": [False, False],
+        }
+    ]
+
+    train_loader: DataLoader[dict[str, Any]] = DataLoader(
+        DummyDataset(batches), batch_size=None
+    )
+
+    with TemporaryDirectory() as tmp_dir:
+        config = RLCDConfig(
+            optimization_mode="listwise_dpo",
+            epochs=1,
+            learning_rate=1e-3,
+            output_dir=tmp_dir,
+            freeze_backbone=True,
+        )
+
+        trainer = RLCDTrainer(
+            config=config,
+            policy_model=policy_model,
+            ref_model=ref_model,
+            train_dataloader=train_loader,
+        )
+
+        result = trainer.train()
+        assert "best_composite_score" in result
+        assert len(result["history"]) == 1
         assert (Path(tmp_dir) / "best_checkpoint" / "model.pt").exists()

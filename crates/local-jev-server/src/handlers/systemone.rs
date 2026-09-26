@@ -44,6 +44,9 @@ pub async fn system_one_handler(
     // 1. 高速スキーマ検証
     req.validate()?;
 
+    // クライアントがリクエストした元の質問仕様 (特に Criteria の元ラベル) を退避
+    let original_questions = req.questions.clone();
+
     // 2. 前処理ガードレールパイプラインの実行 (物理OOM防壁、サニタイズ、縮約、相対日時、算術集計)
     state.guardrail_pipeline.process(&mut req, None)?;
 
@@ -69,6 +72,7 @@ pub async fn system_one_handler(
     let tokenizer = Arc::clone(&state.tokenizer);
     let calib_config = Arc::clone(&state.calib_config);
     let coarse_config = state.coarse_config.clone();
+    let guardrail_pipeline = state.guardrail_pipeline.clone();
     let chunk_size = state.chunk_size;
     let questions = req.questions;
     let gating_config = req.gating.unwrap_or_else(|| state.gating_config.clone());
@@ -102,7 +106,7 @@ pub async fn system_one_handler(
             let total_prompt_tokens = state_tokens + questions_tokens;
 
             // 粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行 (ゲーティング判定も透過適用)
-            let answers = engine.evaluate_batch_questions_coarse_to_fine_chunked_with_gating(
+            let mut answers = engine.evaluate_batch_questions_coarse_to_fine_chunked_with_gating(
                 &tokenizer,
                 &state_text,
                 &questions,
@@ -111,6 +115,9 @@ pub async fn system_one_handler(
                 chunk_size,
                 Some(&gating_config),
             )?;
+
+            // 後処理ガードレール (二峰性分布検出による安全弁降格、および元ラベルキー復元) の適用
+            guardrail_pipeline.post_process(&mut answers, &original_questions);
 
             // 確信度ゲーティング (3系統ルーティング) メトリクス収集および集約サマリー算出
             let (routing_summary, route_records) = if gating_config.enabled {
