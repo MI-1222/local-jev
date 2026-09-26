@@ -27,8 +27,6 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 
-from data.dataset import JevDataset
-from data.schema import QuestionType
 from models.backbone import save_tokenizer_for_runtime
 from models.decision_head import JevDecisionModel
 from training.metrics import MetricsTracker
@@ -279,14 +277,15 @@ def _forward_decision_model(
     input_ids: Tensor,
     attention_mask: Tensor,
     op_indices: Tensor,
+    op_mask: Tensor | None = None,
     question_type: Any | None = None,
 ) -> Tensor:
     """決定モデルの前方計算を安全に呼び出し、ロジットを取得する。
 
     数理・実装仕様:
-    モデルが `question_type` 引数をサポートしている場合 (JevDecisionModel 等) は
+    モデルが `question_type` や `op_mask` 引数をサポートしている場合 (JevDecisionModel 等) は
     質問タイプ (CORAL / Noul / Choice) に応じた決定ヘッドへ動的ルーティングする。
-    単体テスト用ダミーモデルなど `question_type` を受け取らないモデルに対しては
+    単体テスト用ダミーモデルなど追加引数を受け取らないモデルに対しては
     自動的にキーワード引数なしのシグネチャへフォールバックする。
 
     Args:
@@ -294,21 +293,29 @@ def _forward_decision_model(
         input_ids (Tensor): 入力トークン ID。
         attention_mask (Tensor): アテンションマスク。
         op_indices (Tensor): 候補トークン位置インデックス。
+        op_mask (Tensor | None): 有効候補マスク。
         question_type (Any | None): 質問タイプ。
 
     Returns:
         Tensor: 候補ロジットテンソル。
     """
+    kwargs: dict[str, Any] = {}
+    if op_mask is not None:
+        kwargs["op_mask"] = op_mask
     if question_type is not None:
+        kwargs["question_type"] = question_type
+
+    if kwargs:
         try:
             return model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 op_indices=op_indices,
-                question_type=question_type,
+                **kwargs,
             )
         except TypeError:
             pass
+
     return model(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -463,10 +470,10 @@ class RLCDTrainer:
         )
 
         for epoch in range(1, self.config.epochs + 1):
-            # エポック開始時のシャッフル (JevDataset の場合)
+            # エポック開始時のシャッフル (JevDataset / SFTDataset の場合)
             dataset = getattr(self.train_dataloader, "dataset", None)
-            if isinstance(dataset, JevDataset):
-                dataset.shuffle_for_epoch(epoch)
+            if hasattr(dataset, "set_epoch"):
+                dataset.set_epoch(epoch)
 
             train_metrics = self._train_epoch(epoch)
 
@@ -544,29 +551,14 @@ class RLCDTrainer:
                 question_types = batch.get("question_types")
                 rankings = batch.get("rankings")
 
-                # バッチ内で質問タイプが統一されている場合は動的ルーティング引数として抽出
-                q_type = None
-                if question_types is not None and len(question_types) > 0:
-                    first_qt = question_types[0]
-                    first_val = (
-                        first_qt.value
-                        if isinstance(first_qt, QuestionType)
-                        else str(first_qt).lower()
-                    )
-                    if all(
-                        (qt.value if isinstance(qt, QuestionType) else str(qt).lower())
-                        == first_val
-                        for qt in question_types
-                    ):
-                        q_type = first_qt
-
                 # Policy モデルの決定ロジット (バックボーン計算はバッチあたり 1 回のみ)
                 policy_logits = _forward_decision_model(
                     model=self.policy_model,
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     op_indices=op_indices,
-                    question_type=q_type,
+                    op_mask=op_mask,
+                    question_type=question_types,
                 )
 
                 # Reference モデルのロジット (勾配不要・省メモリ実行)
@@ -576,7 +568,8 @@ class RLCDTrainer:
                         input_ids=input_ids,
                         attention_mask=attention_mask,
                         op_indices=op_indices,
-                        question_type=q_type,
+                        op_mask=op_mask,
+                        question_type=question_types,
                     )
 
                 # RLCD 損失とメトリクスの計算 (GRPO または Listwise DPO)
@@ -638,27 +631,13 @@ class RLCDTrainer:
                 question_types = batch.get("question_types")
                 is_negatives = batch.get("is_negatives")
 
-                q_type = None
-                if question_types is not None and len(question_types) > 0:
-                    first_qt = question_types[0]
-                    first_val = (
-                        first_qt.value
-                        if isinstance(first_qt, QuestionType)
-                        else str(first_qt).lower()
-                    )
-                    if all(
-                        (qt.value if isinstance(qt, QuestionType) else str(qt).lower())
-                        == first_val
-                        for qt in question_types
-                    ):
-                        q_type = first_qt
-
                 logits = _forward_decision_model(
                     model=self.policy_model,
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     op_indices=op_indices,
-                    question_type=q_type,
+                    op_mask=op_mask,
+                    question_type=question_types,
                 )
 
                 # 厳密適格スコアの集計
@@ -691,15 +670,32 @@ class RLCDTrainer:
         score_summary = scoring_evaluator.compute()
         class_summary = metrics_tracker.compute()
 
-        # ECE (Expected Calibration Error) の算出
-        concat_probs = torch.cat(all_probs, dim=0)
-        concat_labels = torch.cat(all_labels, dim=0)
-        concat_masks = torch.cat(all_masks, dim=0)
-        ece = compute_expected_calibration_error(
-            probs=concat_probs,
-            labels=concat_labels,
-            op_mask=concat_masks,
-        )
+        # ECE (Expected Calibration Error) の算出 (可変候補数パディング結合)
+        if all_probs:
+            max_opts = max(p.size(1) for p in all_probs)
+            padded_probs_list: list[Tensor] = []
+            padded_masks_list: list[Tensor] = []
+            for p, m in zip(all_probs, all_masks, strict=False):
+                cur_opts = p.size(1)
+                if cur_opts < max_opts:
+                    pad_p = torch.zeros(p.size(0), max_opts - cur_opts, dtype=p.dtype)
+                    pad_m = torch.zeros(m.size(0), max_opts - cur_opts, dtype=m.dtype)
+                    padded_probs_list.append(torch.cat([p, pad_p], dim=1))
+                    padded_masks_list.append(torch.cat([m, pad_m], dim=1))
+                else:
+                    padded_probs_list.append(p)
+                    padded_masks_list.append(m)
+
+            concat_probs = torch.cat(padded_probs_list, dim=0)
+            concat_labels = torch.cat(all_labels, dim=0)
+            concat_masks = torch.cat(padded_masks_list, dim=0)
+            ece = compute_expected_calibration_error(
+                probs=concat_probs,
+                labels=concat_labels,
+                op_mask=concat_masks,
+            )
+        else:
+            ece = 0.0
 
         return {
             "composite_score": score_summary.get("mean_composite", 0.0),
