@@ -11,9 +11,31 @@ use local_jev_runtime::engine::{InferenceEngine, SessionConfig};
 
 #[test]
 fn test_run_quantize_bundle_generation() {
-    let model_dir = PathBuf::from("models/default");
+    let project_root = {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if let Some(parent) = manifest_dir.parent() {
+            if let Some(root) = parent.parent() {
+                root.to_path_buf()
+            } else {
+                manifest_dir.clone()
+            }
+        } else {
+            manifest_dir.clone()
+        }
+    };
+    let model_dir = if PathBuf::from("models/default").exists() {
+        PathBuf::from("models/default")
+    } else if project_root.join("models/default").exists() {
+        project_root.join("models/default")
+    } else {
+        PathBuf::from("models/default")
+    };
+
     if !model_dir.exists() || !model_dir.join("model.onnx").exists() {
-        eprintln!("models/default/model.onnx が存在しないためスキップします。");
+        eprintln!(
+            "models/default/model.onnx が存在しないためスキップします (検索パス: {})。",
+            model_dir.display()
+        );
         return;
     }
 
