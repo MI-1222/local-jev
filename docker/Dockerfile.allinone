@@ -1,24 +1,49 @@
 # ==============================================================================
 # Local-Jev 自己完結型 (All-in-One / Bake-in) 推論コンテナイメージ
 # 
-# デフォルトモデル (models/default) をコンテナイメージ内部に内包し,
+# モデル成果物をコンテナイメージ内部 (/models/default) に内包し,
 # 外部ボリュームマウントなしで即時起動可能なオフライン配布向け定義。
+# 
+# ビルド引数:
+#   BASE_IMAGE: ベースとする local-jev イメージ (デフォルト: local-jev:cpu)
+#   MODEL_TIER: 内包するモデルの Tier 指定 (tier1: 130M-INT8, tier2: 310M-INT8, デフォルト: tier2)
 # ==============================================================================
 
-# ------------------------------------------------------------------------------
-# Stage 1: CPU ベースイメージから派生
-# ------------------------------------------------------------------------------
-FROM local-jev:cpu AS base
+ARG BASE_IMAGE=local-jev:cpu
+FROM ${BASE_IMAGE} AS base
+
+ARG MODEL_TIER=tier2
 
 USER root
 
-# モデルアーティファクトの配置
-COPY models/default /models/default
+# 指定された Tier のモデル成果物を /models/default に配置
+# tier1: models/quantized (130M-INT8)
+# tier2: models/modernbert-310m-int8 (310M-INT8)
+COPY models/default* /tmp/models_default/
+COPY models/modernbert-310m-int8* /tmp/models_tier2/
+COPY models/quantized* /tmp/models_tier1/
 
-# 非 root ユーザーへの権限付与
-RUN chown -R jev:jev /models
+RUN mkdir -p /models/default && \
+    if [ "${MODEL_TIER}" = "tier1" ] && [ -f /tmp/models_tier1/model.onnx ]; then \
+        echo "Baking Tier 1 (130M-INT8) model into image..." && \
+        cp -r /tmp/models_tier1/* /models/default/; \
+    elif [ "${MODEL_TIER}" = "tier2" ] && [ -f /tmp/models_tier2/model.onnx ]; then \
+        echo "Baking Tier 2 (310M-INT8) model into image..." && \
+        cp -r /tmp/models_tier2/* /models/default/; \
+    elif [ -f /tmp/models_default/model.onnx ]; then \
+        echo "Baking default model into image..." && \
+        cp -r /tmp/models_default/* /models/default/; \
+    else \
+        echo "Error: No valid model files found for tier ${MODEL_TIER}" >&2 && exit 1; \
+    fi && \
+    rm -rf /tmp/models_* && \
+    chown -R jev:jev /models
 
 USER jev
+
+# Tier に応じた環境変数デフォルト値
+ENV LOCAL_JEV_MODEL_DIR=/models/default \
+    LOCAL_JEV_TIER=${MODEL_TIER}
 
 # デフォルト Entrypoint & CMD (外部指定なしで即時動作)
 ENTRYPOINT ["/usr/local/bin/local-jev"]

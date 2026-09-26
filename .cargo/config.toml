@@ -1,0 +1,19 @@
+# ==============================================================================
+# Cargo 設定ファイル: ターゲット別リンカフラグ (rpath)
+#
+# 配布バイナリが実行時に自身の相対パス (../lib または同一ディレクトリ) から
+# ONNX Runtime 共有ライブラリ (libonnxruntime.so / dylib) を解決できるように
+# 各ターゲットの rpath を事前設定する。
+# ==============================================================================
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-args=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"]
+
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "link-args=-Wl,-rpath,$ORIGIN/../lib:$ORIGIN"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-args=-Wl,-rpath,@executable_path/../lib -Wl,-rpath,@loader_path"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-args=-Wl,-rpath,@executable_path/../lib -Wl,-rpath,@loader_path"]
