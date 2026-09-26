@@ -839,8 +839,10 @@ mod tests {
         probs.insert("billing".to_string(), 0.10);
         let answer = Answer::choice("tech_support", probs, 0.90);
 
-        let mut config = GatingConfig::default();
-        config.ood_enabled = false;
+        let config = GatingConfig {
+            ood_enabled: false,
+            ..Default::default()
+        };
 
         let meta = evaluate_answer_gating_with_energy(
             &answer,

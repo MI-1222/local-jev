@@ -16,13 +16,14 @@ use local_jev_core::gating::GatingConfig;
 use local_jev_core::schema::{Answer, Question, QuestionType};
 
 use ort::session::Session;
+use ort::session::builder::SessionBuilder;
 use ort::value::TensorRef;
 
 use crate::engine::coarse::{
     CoarseScorer, CoarseToFineConfig, LexicalCoarseScorer, filter_top_candidates,
     reconstruct_probabilities,
 };
-use crate::engine::config::{ExecutionProvider, SessionConfig};
+use crate::engine::config::{ExecutionProvider, SessionConfig, auto_intra_threads};
 use crate::engine::gating::{apply_gating_to_answer_with_energy, calculate_choice_energy};
 use crate::engine::provider::register_execution_providers;
 use crate::error::{Result, RuntimeError};
@@ -72,31 +73,7 @@ impl InferenceEngine {
         );
 
         for i in 0..pool_size {
-            let mut builder = Session::builder().map_err(RuntimeError::Ort)?;
-            builder = builder
-                .with_optimization_level(config.optimization_level.to_ort_level())
-                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-
-            builder = builder
-                .with_memory_pattern(config.enable_mem_arena)
-                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-
-            if let Some(intra) = config.intra_threads {
-                builder = builder
-                    .with_intra_threads(intra)
-                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-            }
-            if let Some(inter) = config.inter_threads {
-                builder = builder
-                    .with_inter_threads(inter)
-                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-            }
-
-            let provider = register_execution_providers(
-                &mut builder,
-                &config.preferred_providers,
-                config.enable_mem_arena,
-            )?;
+            let (mut builder, provider) = create_session_builder(&config, pool_size)?;
             if i == 0 {
                 active_provider = provider;
             }
@@ -127,31 +104,7 @@ impl InferenceEngine {
         );
 
         for i in 0..pool_size {
-            let mut builder = Session::builder().map_err(RuntimeError::Ort)?;
-            builder = builder
-                .with_optimization_level(config.optimization_level.to_ort_level())
-                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-
-            builder = builder
-                .with_memory_pattern(config.enable_mem_arena)
-                .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-
-            if let Some(intra) = config.intra_threads {
-                builder = builder
-                    .with_intra_threads(intra)
-                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-            }
-            if let Some(inter) = config.inter_threads {
-                builder = builder
-                    .with_inter_threads(inter)
-                    .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
-            }
-
-            let provider = register_execution_providers(
-                &mut builder,
-                &config.preferred_providers,
-                config.enable_mem_arena,
-            )?;
+            let (mut builder, provider) = create_session_builder(&config, pool_size)?;
             if i == 0 {
                 active_provider = provider;
             }
@@ -402,9 +355,14 @@ impl InferenceEngine {
             .try_extract_tensor::<f32>()
             .map_err(RuntimeError::Ort)?;
 
-        // 出力形状の契約検証
-        let shape_usize: Vec<usize> = shape.iter().map(|&dim| dim as usize).collect();
-        dims.validate_output_shape(&shape_usize)?;
+        // 出力形状の契約検証 (スタック配列によるゼロアロケーション化)
+        if shape.len() != 2 {
+            return Err(RuntimeError::ModelContractViolation(format!(
+                "出力テンソル '{TENSOR_LOGITS}' は 2 次元テンソル [batch, num_options] である必要があります: {shape:?}。"
+            )));
+        }
+        let shape_stack = [shape[0] as usize, shape[1] as usize];
+        dims.validate_output_shape(&shape_stack)?;
 
         // 7. 出力値の有限性 (NaN/Inf) 検証および f32 -> f64 キャスト
         for (i, &val) in logits_f32.iter().enumerate() {
@@ -658,4 +616,55 @@ impl InferenceEngine {
             &scorer,
         )
     }
+}
+
+/// 指定された設定とプールサイズに基づいて `SessionBuilder` を構成する内部共通ヘルパー関数。
+///
+/// グラフ最適化レベル、メモリアリーナ、並列実行モード、物理コア数に応じた
+/// `intra_threads` 自動設定、および最適化済みモデルのキャッシュ設定を適用する。
+fn create_session_builder(
+    config: &SessionConfig,
+    pool_size: usize,
+) -> Result<(SessionBuilder, ExecutionProvider)> {
+    let mut builder = Session::builder().map_err(RuntimeError::Ort)?;
+
+    builder = builder
+        .with_optimization_level(config.optimization_level.to_ort_level())
+        .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+    builder = builder
+        .with_memory_pattern(config.enable_mem_arena)
+        .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+    builder = builder
+        .with_parallel_execution(config.parallel_execution)
+        .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+    // スレッド数の決定: 未指定時は物理コア数とセッションプール数から自動算出
+    let intra = config
+        .intra_threads
+        .unwrap_or_else(|| auto_intra_threads(pool_size, 8));
+    builder = builder
+        .with_intra_threads(intra)
+        .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+
+    if let Some(inter) = config.inter_threads {
+        builder = builder
+            .with_inter_threads(inter)
+            .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+    }
+
+    if let Some(ref opt_path) = config.optimized_model_path {
+        builder = builder
+            .with_optimized_model_path(opt_path)
+            .map_err(|e| RuntimeError::OrtConfig(e.to_string()))?;
+    }
+
+    let provider = register_execution_providers(
+        &mut builder,
+        &config.preferred_providers,
+        config.enable_mem_arena,
+    )?;
+
+    Ok((builder, provider))
 }

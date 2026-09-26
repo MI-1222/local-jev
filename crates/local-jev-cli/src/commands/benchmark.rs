@@ -34,6 +34,14 @@ pub struct BenchmarkArgs {
     pub provider: Option<String>,
     /// 実行対象シナリオ ("all", "single", "batch", "coarse", "scratchpad")。
     pub scenario: String,
+    /// セッションプールサイズ。
+    pub pool_size: usize,
+    /// 単一オペレータ内の並列スレッド数 (intra-op)。
+    pub intra_threads: Option<usize>,
+    /// 複数オペレータ間の並列スレッド数 (inter-op)。
+    pub inter_threads: Option<usize>,
+    /// CPU メモリアリーナを有効化するかどうか。
+    pub enable_mem_arena: bool,
     /// CI 連携用 JSON 形式出力フラグ。
     pub json: bool,
 }
@@ -130,7 +138,13 @@ pub fn run_benchmark(args: BenchmarkArgs) -> Result<(), Box<dyn std::error::Erro
     }
 
     // 2. セッション設定の構築
-    let mut session_config = SessionConfig::default();
+    let mut session_config = SessionConfig {
+        pool_size: args.pool_size.max(1),
+        intra_threads: args.intra_threads,
+        inter_threads: args.inter_threads.or(Some(1)),
+        enable_mem_arena: args.enable_mem_arena,
+        ..Default::default()
+    };
     if let Some(ref provider_str) = args.provider {
         let provider = parse_provider(provider_str)?;
         session_config.preferred_providers = match provider {

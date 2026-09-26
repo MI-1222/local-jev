@@ -335,3 +335,31 @@ fn test_concurrent_inference_with_session_pool() {
             .expect("スレッド実行でパニックが発生しました。");
     }
 }
+
+#[test]
+fn test_optimized_model_cache_and_tier_presets() {
+    let model_dir = default_model_dir();
+    let model_path = model_dir.join("model.onnx");
+    if !model_path.exists() {
+        return;
+    }
+
+    let cache_dir = std::env::temp_dir().join(format!("local_jev_test_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&cache_dir);
+    let cache_path = cache_dir.join("optimized_model.onnx");
+
+    let config = SessionConfig::for_tier1().with_optimized_model_path(&cache_path);
+
+    let engine = InferenceEngine::new(&model_path, config).expect("Tier 1 セッション初期化失敗。");
+    assert_eq!(engine.pool_size(), 1);
+
+    // 最適化モデルファイルが生成されたことを確認
+    assert!(
+        cache_path.exists(),
+        "最適化モデルファイルが出力されていること。"
+    );
+
+    // クリーンアップ
+    let _ = std::fs::remove_file(&cache_path);
+    let _ = std::fs::remove_dir(&cache_dir);
+}
