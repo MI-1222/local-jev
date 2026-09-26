@@ -76,6 +76,7 @@ fn test_single_question_gating() {
         high_threshold: 0.70,
         low_threshold: 0.35,
         top_margin_threshold: 0.15,
+        ..Default::default()
     };
     let answer = engine
         .evaluate_question_coarse_to_fine(
@@ -99,6 +100,8 @@ fn test_single_question_gating() {
         high_threshold: 0.001,
         low_threshold: 0.0005,
         top_margin_threshold: 0.0,
+        ood_enabled: false,
+        energy_threshold: 100.0,
     };
     let answer_auto = engine
         .evaluate_question_coarse_to_fine_with_gating(
@@ -163,6 +166,8 @@ fn test_batch_and_chunked_gating() {
         high_threshold: 0.9999,
         low_threshold: 0.00001,
         top_margin_threshold: 0.9999,
+        ood_enabled: false,
+        energy_threshold: 100.0,
     };
 
     // 通常バッチ推論でのゲーティング
@@ -255,6 +260,8 @@ fn test_coarse_to_fine_gating_and_reconstruction() {
         high_threshold: 0.70,
         low_threshold: 0.35,
         top_margin_threshold: 0.15,
+        ood_enabled: true,
+        energy_threshold: -1.0,
     };
 
     let answers = engine
@@ -299,4 +306,100 @@ fn test_coarse_to_fine_gating_and_reconstruction() {
             assert!(gating.reason.contains("フォールバック"));
         }
     }
+}
+
+#[test]
+fn test_runtime_energy_ood_circuit_breaker() {
+    let (engine, tokenizer, calib_config) = match init_test_engine() {
+        Some(t) => t,
+        None => return,
+    };
+
+    let mut choice_map = IndexMap::new();
+    choice_map.insert("positive".to_string(), "肯定的・改善".to_string());
+    choice_map.insert("neutral".to_string(), "中立・変化なし".to_string());
+    choice_map.insert("negative".to_string(), "否定的・悪化".to_string());
+    let question = Question::new_choice("感情分類を行ってください。", choice_map);
+    let coarse_config = CoarseToFineConfig::default();
+
+    // 1. エネルギー閾値を厳しく設定し、意図的に OOD 安全弁を発動させるケース
+    // 正規化エネルギー閾値を -50.0 (非常に低い値) に設定すると、通常の推論ロジットでも energy > threshold となり OOD 検知される
+    let strict_ood_config = GatingConfig {
+        enabled: true,
+        high_threshold: 0.10, // 確信度条件は緩い
+        low_threshold: 0.05,
+        top_margin_threshold: 0.0,
+        ood_enabled: true,
+        energy_threshold: -50.0, // 極めて厳しいエネルギー閾値 -> 強制 OOD
+    };
+
+    let answer_ood = engine
+        .evaluate_question_coarse_to_fine_with_gating(
+            &tokenizer,
+            "本サービスは非常に使いやすく満足しています。",
+            &question,
+            &calib_config,
+            &coarse_config,
+            Some(&strict_ood_config),
+        )
+        .expect("推論に成功する。");
+
+    let gating_ood = answer_ood.gating.expect("gating メタデータが存在する。");
+    assert_eq!(
+        gating_ood.route,
+        DecisionRoute::Fallback,
+        "OOD 安全弁発動により Fallback へ短絡降格される。"
+    );
+    assert!(gating_ood.is_ood, "is_ood フラグが true である。");
+    assert!(
+        gating_ood.energy.is_some(),
+        "energy 値が算出・記録されている。"
+    );
+
+    let prompt = gating_ood
+        .escalation
+        .as_ref()
+        .expect("エスカレーション情報が存在する。")
+        .prompt_template
+        .as_ref()
+        .expect("プロンプトテンプレートが存在する。");
+    assert!(
+        prompt.contains("None of the above / 該当なし"),
+        "OOD 特化の思考誘導が含まれる。"
+    );
+    assert!(
+        prompt.contains("未定義カテゴリ"),
+        "未定義カテゴリに関する指示が含まれる。"
+    );
+
+    // 2. ood_enabled = false で OOD 安全弁を無効化したケース
+    let disabled_ood_config = GatingConfig {
+        enabled: true,
+        high_threshold: 0.10,
+        low_threshold: 0.05,
+        top_margin_threshold: 0.0,
+        ood_enabled: false,
+        energy_threshold: -50.0,
+    };
+
+    let answer_disabled = engine
+        .evaluate_question_coarse_to_fine_with_gating(
+            &tokenizer,
+            "本サービスは非常に使いやすく満足しています。",
+            &question,
+            &calib_config,
+            &coarse_config,
+            Some(&disabled_ood_config),
+        )
+        .expect("推論に成功する。");
+
+    let gating_disabled = answer_disabled
+        .gating
+        .expect("gating メタデータが存在する。");
+    assert_ne!(
+        gating_disabled.route,
+        DecisionRoute::Fallback,
+        "OOD 安全弁が無効化されているため Fallback への強制降格は発生しない。"
+    );
+    assert!(!gating_disabled.is_ood, "is_ood フラグは false である。");
 }

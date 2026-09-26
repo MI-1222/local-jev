@@ -13,7 +13,7 @@ use crate::engine::coarse::{
     CoarseScorer, CoarseToFineConfig, LexicalCoarseScorer, filter_top_candidates,
     reconstruct_probabilities,
 };
-use crate::engine::gating::apply_gating_to_answer;
+use crate::engine::gating::{apply_gating_to_answer_with_energy, calculate_choice_energy};
 use crate::engine::session::InferenceEngine;
 use crate::error::Result;
 use crate::tokenizer::{BatchTokenizedQuestions, JevTokenizer};
@@ -200,8 +200,10 @@ impl InferenceEngine {
                 calib_config,
                 &mut probs_buf[..k_i],
             )?;
-            apply_gating_to_answer(
+            let energy = calculate_choice_energy(question, valid_logits, calib_config);
+            apply_gating_to_answer_with_energy(
                 &mut answer,
+                energy,
                 Some(state),
                 Some(q_key),
                 Some(question),
@@ -282,8 +284,10 @@ impl InferenceEngine {
                 calib_config,
                 &mut scratchpad.probs_buf[..k_i],
             )?;
-            apply_gating_to_answer(
+            let energy = calculate_choice_energy(question, valid_logits, calib_config);
+            apply_gating_to_answer_with_energy(
                 &mut answer,
+                energy,
                 Some(state),
                 Some(q_key),
                 Some(question),
@@ -433,8 +437,10 @@ impl InferenceEngine {
                     calib_config,
                     &mut probs_buf[..k_i],
                 )?;
-                apply_gating_to_answer(
+                let energy = calculate_choice_energy(question, valid_logits, calib_config);
+                apply_gating_to_answer_with_energy(
                     &mut answer,
+                    energy,
                     Some(state),
                     Some(q_key),
                     Some(question),
@@ -524,8 +530,10 @@ impl InferenceEngine {
                 let full_probs = reconstruct_probabilities(original_keys, sub_probs);
                 answer.probabilities = Some(full_probs);
                 let orig_q = questions.get(q_key);
-                apply_gating_to_answer(
+                let energy = answer.gating.as_ref().and_then(|g| g.energy);
+                apply_gating_to_answer_with_energy(
                     answer,
+                    energy,
                     Some(state),
                     Some(q_key),
                     orig_q,
@@ -671,6 +679,8 @@ impl InferenceEngine {
         // 2. 共通 State を 1 度だけエンコードし全チャンクで再利用
         let state_ids = tokenizer.encode_state(state)?;
         let mut answers = IndexMap::with_capacity(questions.len());
+        let mut coarse_energies: IndexMap<String, Option<f64>> =
+            IndexMap::with_capacity(original_keys_map.len());
 
         // 3. マイクロバッチ分割逐次推論
         for chunk_slice in processed_questions
@@ -711,17 +721,22 @@ impl InferenceEngine {
                     &mut probs_buf[..k_i],
                 )?;
 
+                let energy = calculate_choice_energy(question, valid_logits, calib_config);
+
                 // 縮小されていない質問にはここでゲーティングを適用
                 if !original_keys_map.contains_key(q_key) {
                     let orig_q = questions.get(q_key);
-                    apply_gating_to_answer(
+                    apply_gating_to_answer_with_energy(
                         &mut answer,
+                        energy,
                         Some(state),
                         Some(q_key),
                         orig_q,
                         gating_config,
                         calib_config,
                     );
+                } else {
+                    coarse_energies.insert(q_key.clone(), energy);
                 }
                 answers.insert(q_key.clone(), answer);
             }
@@ -735,8 +750,10 @@ impl InferenceEngine {
                 let full_probs = reconstruct_probabilities(original_keys, sub_probs);
                 answer.probabilities = Some(full_probs);
                 let orig_q = questions.get(q_key);
-                apply_gating_to_answer(
+                let energy = coarse_energies.get(q_key).copied().flatten();
+                apply_gating_to_answer_with_energy(
                     answer,
+                    energy,
                     Some(state),
                     Some(q_key),
                     orig_q,

@@ -7,9 +7,7 @@
 use indexmap::IndexMap;
 use local_jev_core::contract::CalibrationConfig;
 pub use local_jev_core::gating::DecisionRoute;
-use local_jev_core::gating::{
-    GatingConfig, SystemRoutingSummary, evaluate_answer_gating, evaluate_response_routing,
-};
+use local_jev_core::gating::{GatingConfig, SystemRoutingSummary, evaluate_response_routing};
 use local_jev_core::schema::{Answer, Question};
 
 /// リクエスト固有設定とモデル較正設定から実効的なゲーティング設定をカスケード解決する。
@@ -35,23 +33,54 @@ pub fn resolve_gating_config(
 }
 
 use crate::engine::escalation::build_rich_escalation_prompt;
+use local_jev_core::gating::evaluate_answer_gating_with_energy;
+use local_jev_core::math::normalized_free_energy;
+use local_jev_core::schema::QuestionType;
 
-/// 単一の判定結果 (`Answer`) に対し、解決されたゲーティング設定を適用する。
+/// Choice 型の質問とロジット配列から、正規化ヘルムホルツ自由エネルギーを算出する。
 ///
-/// 設定の `enabled` が `true` の場合、`evaluate_answer_gating` を適用して
+/// 候補数 $K$ とモデルのキャリブレーション温度 $T = \text{calib\_config.get\_temperature(QuestionType::Choice, K)}$ を用い、
+/// $E_{\text{norm}}(x) = -T \ln \sum_{i=1}^K \exp(z_i / T) + T \ln K$ を算出する。
+/// Choice 型以外 (Score 型、Noul 型) またはロジットが空の場合は `None` を返す。
+///
+/// # 引数
+/// - `question`: 質問定義。
+/// - `logits`: 決定ロジットスライス。
+/// - `calib_config`: キャリブレーション設定 (候補数バケット温度)。
+///
+/// # 戻り値
+/// 正規化ヘルムホルツ自由エネルギー値 (任意)。
+pub fn calculate_choice_energy(
+    question: &Question,
+    logits: &[f64],
+    calib_config: &CalibrationConfig,
+) -> Option<f64> {
+    if question.question_type != QuestionType::Choice || logits.is_empty() {
+        return None;
+    }
+    let k = logits.len();
+    let temp = calib_config.get_temperature(QuestionType::Choice, k);
+    normalized_free_energy(logits, temp).ok()
+}
+
+/// 単一の判定結果 (`Answer`) に対し、エネルギー値と解決されたゲーティング設定を適用する。
+///
+/// 設定の `enabled` が `true` の場合、`evaluate_answer_gating_with_energy` を適用して
 /// `answer.gating` に監査メタデータを付与する。無効 (`enabled == false`) の場合は何もしない。
-/// また、`route != AutoExecute` のエスカレーション時は、`state` や選択肢定義を含む
-/// 高度な CoT エスカレーションプロンプトを遅延構築して格納する。
+/// Choice 型かつ `is_ood == true` の場合、または確信度不足によるエスカレーション時は、
+/// 文脈や診断情報を含む高度な CoT エスカレーションプロンプトを構築して格納する。
 ///
 /// # 引数
 /// - `answer`: 判定結果 (可変参照)。
+/// - `energy`: 正規化ヘルムホルツ自由エネルギー値 (任意)。
 /// - `state`: 文脈テキスト (プロンプト構築用、任意)。
 /// - `question_id`: 質問識別子 (プロンプト構築用、任意)。
 /// - `question`: 質問定義 (任意)。
 /// - `gating_config`: 明示的なゲーティング設定 (任意)。
 /// - `calib_config`: モデルのキャリブレーション設定。
-pub fn apply_gating_to_answer(
+pub fn apply_gating_to_answer_with_energy(
     answer: &mut Answer,
+    energy: Option<f64>,
     state: Option<&str>,
     question_id: Option<&str>,
     question: Option<&Question>,
@@ -60,7 +89,8 @@ pub fn apply_gating_to_answer(
 ) {
     let config = resolve_gating_config(gating_config, calib_config);
     if config.enabled {
-        let mut meta = evaluate_answer_gating(answer, question_id, question, &config);
+        let mut meta =
+            evaluate_answer_gating_with_energy(answer, question_id, question, &config, energy);
         if meta.route != DecisionRoute::AutoExecute {
             let rich_prompt = meta.escalation.as_ref().map(|esc| {
                 build_rich_escalation_prompt(
@@ -77,6 +107,116 @@ pub fn apply_gating_to_answer(
         }
         answer.gating = Some(meta);
     }
+}
+
+/// 単一の判定結果 (`Answer`) とロジットスライスからエネルギーを自動算出し、ゲーティング設定を適用する。
+///
+/// # 引数
+/// - `answer`: 判定結果 (可変参照)。
+/// - `logits`: 決定ロジットスライス (任意)。
+/// - `state`: 文脈テキスト (任意)。
+/// - `question_id`: 質問識別子 (任意)。
+/// - `question`: 質問定義 (任意)。
+/// - `gating_config`: 明示的なゲーティング設定 (任意)。
+/// - `calib_config`: モデルのキャリブレーション設定。
+pub fn apply_gating_to_answer_with_logits(
+    answer: &mut Answer,
+    logits: Option<&[f64]>,
+    state: Option<&str>,
+    question_id: Option<&str>,
+    question: Option<&Question>,
+    gating_config: Option<&GatingConfig>,
+    calib_config: &CalibrationConfig,
+) {
+    let energy = match (question, logits) {
+        (Some(q), Some(lg)) => calculate_choice_energy(q, lg, calib_config),
+        _ => None,
+    };
+    apply_gating_to_answer_with_energy(
+        answer,
+        energy,
+        state,
+        question_id,
+        question,
+        gating_config,
+        calib_config,
+    );
+}
+
+/// 単一の判定結果 (`Answer`) に対し、解決されたゲーティング設定を適用する。
+///
+/// エネルギー値は `None` として処理されるため、OOD チェックを伴わない標準の確信度ゲーティングが行われる。
+/// ロジットに基づく OOD 安全弁を有効化する場合は [`apply_gating_to_answer_with_energy`] または
+/// [`apply_gating_to_answer_with_logits`] を使用する。
+///
+/// # 引数
+/// - `answer`: 判定結果 (可変参照)。
+/// - `state`: 文脈テキスト (プロンプト構築用、任意)。
+/// - `question_id`: 質問識別子 (プロンプト構築用、任意)。
+/// - `question`: 質問定義 (任意)。
+/// - `gating_config`: 明示的なゲーティング設定 (任意)。
+/// - `calib_config`: モデルのキャリブレーション設定。
+pub fn apply_gating_to_answer(
+    answer: &mut Answer,
+    state: Option<&str>,
+    question_id: Option<&str>,
+    question: Option<&Question>,
+    gating_config: Option<&GatingConfig>,
+    calib_config: &CalibrationConfig,
+) {
+    apply_gating_to_answer_with_energy(
+        answer,
+        None,
+        state,
+        question_id,
+        question,
+        gating_config,
+        calib_config,
+    );
+}
+
+/// 複数質問の判定結果マップに対し、ロジット配列を用いたエネルギー付きゲーティング判定を一括適用する。
+///
+/// 各回答にゲーティングメタデータ (および OOD 診断) を付与し、有効な場合は `SystemRoutingSummary` を返却する。
+///
+/// # 引数
+/// - `answers`: 判定結果マップ (可変参照)。
+/// - `logits_map`: 各質問のロジット配列マップ。
+/// - `state`: 共通の文脈テキスト (任意)。
+/// - `questions`: 質問定義マップ。
+/// - `gating_config`: 明示的なゲーティング設定 (任意)。
+/// - `calib_config`: モデルのキャリブレーション設定。
+///
+/// # 戻り値
+/// ゲーティングが有効な場合は `Some(SystemRoutingSummary)`、無効な場合は `None`。
+pub fn apply_gating_to_answers_with_logits(
+    answers: &mut IndexMap<String, Answer>,
+    logits_map: &IndexMap<String, Vec<f64>>,
+    state: Option<&str>,
+    questions: &IndexMap<String, Question>,
+    gating_config: Option<&GatingConfig>,
+    calib_config: &CalibrationConfig,
+) -> Option<SystemRoutingSummary> {
+    let config = resolve_gating_config(gating_config, calib_config);
+    if !config.enabled {
+        return None;
+    }
+
+    for (qid, answer) in answers.iter_mut() {
+        let q_def = questions.get(qid);
+        let q_logits = logits_map.get(qid).map(|v| v.as_slice());
+        apply_gating_to_answer_with_logits(
+            answer,
+            q_logits,
+            state,
+            Some(qid),
+            q_def,
+            gating_config,
+            calib_config,
+        );
+    }
+
+    Some(evaluate_response_routing(answers))
 }
 
 /// 複数質問の判定結果マップに対し、ゲーティング判定を一括適用し集約サマリーを算出する。
@@ -124,6 +264,7 @@ mod tests {
                 high_threshold: 0.72,
                 low_threshold: 0.38,
                 top_margin_threshold: 0.18,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -139,6 +280,8 @@ mod tests {
             high_threshold: 0.90,
             low_threshold: 0.40,
             top_margin_threshold: 0.20,
+            ood_enabled: true,
+            energy_threshold: -1.0,
         };
         let resolved_explicit = resolve_gating_config(Some(&explicit), &calib);
         assert!(!resolved_explicit.enabled);
@@ -231,5 +374,92 @@ mod tests {
         assert!(prompt.contains("System 1 の判定では候補"));
         assert!(prompt.contains("思考連鎖 (Chain-of-Thought)"));
         assert!(prompt.contains("```json"));
+    }
+
+    #[test]
+    fn test_calculate_choice_energy() {
+        let calib = CalibrationConfig::default();
+        let mut criteria = IndexMap::new();
+        criteria.insert("a".to_string(), "説明A".to_string());
+        criteria.insert("b".to_string(), "説明B".to_string());
+        let q = Question::new_choice("指示", criteria);
+
+        // ID 的ロジット (顕著な差)
+        let id_logits = [5.0, -2.0];
+        let energy_id = calculate_choice_energy(&q, &id_logits, &calib).unwrap();
+        // OOD 的ロジット (低確信度・平坦)
+        let ood_logits = [0.1, 0.1];
+        let energy_ood = calculate_choice_energy(&q, &ood_logits, &calib).unwrap();
+
+        // 顕著な差がある ID は低エネルギー、平坦な OOD は高エネルギー
+        assert!(energy_id < energy_ood);
+    }
+
+    #[test]
+    fn test_apply_gating_to_answer_with_energy_ood() {
+        let calib = CalibrationConfig::default();
+        let mut criteria = IndexMap::new();
+        criteria.insert("opt_a".to_string(), "説明A".to_string());
+        criteria.insert("opt_b".to_string(), "説明B".to_string());
+        let q = Question::new_choice("指示文", criteria);
+
+        let mut probs = IndexMap::new();
+        probs.insert("opt_a".to_string(), 0.95);
+        probs.insert("opt_b".to_string(), 0.05);
+
+        // 確信度は高くても、エネルギーが閾値 (-1.0) を超えて OOD (平坦/低信頼性) と検知された場合
+        let mut ans = Answer::choice("opt_a", probs, 0.95);
+        apply_gating_to_answer_with_energy(
+            &mut ans,
+            Some(-0.2), // > -1.0
+            Some("未定義カテゴリの文脈"),
+            Some("q_ood"),
+            Some(&q),
+            None,
+            &calib,
+        );
+
+        assert!(ans.gating.is_some());
+        let meta = ans.gating.as_ref().unwrap();
+        assert_eq!(meta.route, DecisionRoute::Fallback);
+        assert!(meta.is_ood);
+        assert_eq!(meta.energy, Some(-0.2));
+
+        // エスカレーションプロンプトに OOD 警告が含まれることを検証
+        let esc = meta.escalation.as_ref().unwrap();
+        let prompt = esc.prompt_template.as_ref().unwrap();
+        assert!(prompt.contains("None of the above / 該当なし"));
+        assert!(prompt.contains("未定義カテゴリ"));
+    }
+
+    #[test]
+    fn test_apply_gating_to_answer_with_logits() {
+        let calib = CalibrationConfig::default();
+        let mut criteria = IndexMap::new();
+        criteria.insert("opt_a".to_string(), "説明A".to_string());
+        criteria.insert("opt_b".to_string(), "説明B".to_string());
+        let q = Question::new_choice("指示文", criteria);
+
+        let mut probs = IndexMap::new();
+        probs.insert("opt_a".to_string(), 0.95);
+        probs.insert("opt_b".to_string(), 0.05);
+
+        let mut ans = Answer::choice("opt_a", probs, 0.95);
+        // ID 的な明確なロジット -> 低エネルギー -> AutoExecute 通過
+        let id_logits = [5.0, -2.0];
+        apply_gating_to_answer_with_logits(
+            &mut ans,
+            Some(&id_logits),
+            Some("通常文脈"),
+            Some("q_id"),
+            Some(&q),
+            None,
+            &calib,
+        );
+
+        let meta = ans.gating.as_ref().unwrap();
+        assert_eq!(meta.route, DecisionRoute::AutoExecute);
+        assert!(!meta.is_ood);
+        assert!(meta.energy.is_some());
     }
 }

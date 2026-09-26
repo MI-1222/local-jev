@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
 use crate::gating::{
-    DEFAULT_HIGH_CONFIDENCE_THRESHOLD, DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+    DEFAULT_ENERGY_THRESHOLD, DEFAULT_HIGH_CONFIDENCE_THRESHOLD, DEFAULT_LOW_CONFIDENCE_THRESHOLD,
     DEFAULT_TOP_MARGIN_THRESHOLD, GatingConfig,
 };
 use crate::schema::QuestionType;
@@ -67,6 +67,18 @@ pub struct GatingThresholds {
     /// 上位2候補確率マージン閾値。
     #[serde(default = "default_top_margin_threshold")]
     pub top_margin_threshold: f64,
+
+    /// OOD 安全弁を有効化するかどうか (デフォルト: true)。
+    #[serde(default = "default_true")]
+    pub ood_enabled: bool,
+
+    /// OOD 判定用の正規化自由エネルギー閾値 (デフォルト: -1.0)。
+    #[serde(default = "default_energy_threshold")]
+    pub energy_threshold: f64,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_high_threshold() -> f64 {
@@ -81,12 +93,18 @@ fn default_top_margin_threshold() -> f64 {
     DEFAULT_TOP_MARGIN_THRESHOLD
 }
 
+fn default_energy_threshold() -> f64 {
+    DEFAULT_ENERGY_THRESHOLD
+}
+
 impl Default for GatingThresholds {
     fn default() -> Self {
         Self {
             high_threshold: DEFAULT_HIGH_CONFIDENCE_THRESHOLD,
             low_threshold: DEFAULT_LOW_CONFIDENCE_THRESHOLD,
             top_margin_threshold: DEFAULT_TOP_MARGIN_THRESHOLD,
+            ood_enabled: true,
+            energy_threshold: DEFAULT_ENERGY_THRESHOLD,
         }
     }
 }
@@ -105,6 +123,8 @@ impl GatingThresholds {
             high_threshold: self.high_threshold,
             low_threshold: self.low_threshold,
             top_margin_threshold: self.top_margin_threshold,
+            ood_enabled: self.ood_enabled,
+            energy_threshold: self.energy_threshold,
         }
     }
 }

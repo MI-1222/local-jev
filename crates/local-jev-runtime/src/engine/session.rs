@@ -23,7 +23,7 @@ use crate::engine::coarse::{
     reconstruct_probabilities,
 };
 use crate::engine::config::{ExecutionProvider, SessionConfig};
-use crate::engine::gating::apply_gating_to_answer;
+use crate::engine::gating::{apply_gating_to_answer_with_energy, calculate_choice_energy};
 use crate::engine::provider::register_execution_providers;
 use crate::error::{Result, RuntimeError};
 use crate::tokenizer::{JevTokenizer, TokenizedQuestion};
@@ -536,8 +536,10 @@ impl InferenceEngine {
             let logits = self.forward_question(&tokenized)?;
             let mut answer =
                 evaluate_question(question, &logits, calib_config).map_err(RuntimeError::Core)?;
-            apply_gating_to_answer(
+            let energy = calculate_choice_energy(question, &logits, calib_config);
+            apply_gating_to_answer_with_energy(
                 &mut answer,
+                energy,
                 Some(state),
                 None,
                 Some(question),
@@ -585,9 +587,11 @@ impl InferenceEngine {
             gating: None,
         };
 
-        // 6. ゲーティング判定の適用 (縮小空間での確信度を尊重しつつ監査メタデータを付与)
-        apply_gating_to_answer(
+        // 6. ゲーティング判定の適用 (縮小空間での確信度・正規化自由エネルギーを尊重しつつ監査メタデータを付与)
+        let energy = calculate_choice_energy(&sub_question, &sub_logits, calib_config);
+        apply_gating_to_answer_with_energy(
             &mut answer,
+            energy,
             Some(state),
             None,
             Some(question),
