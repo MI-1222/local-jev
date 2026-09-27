@@ -2,7 +2,7 @@
 # Local-Jev 自動リリース & 配布ワークフロー
 #
 # Git タグ (v*.*.*) のプッシュまたは手動実行を契機に,
-# 1. クロスプラットフォーム・ネイティブバイナリのビルド (Linux x86_64/arm64, macOS Apple/Intel)
+# 1. クロスプラットフォーム・ネイティブバイナリのビルド (Linux x86_64/arm64, macOS Apple Silicon)
 # 2. ONNX Runtime (libonnxruntime) 共有ライブラリの自動バンドル & rpath 設定
 # 3. Docker Buildx による Multi-Arch コンテナイメージ (linux/amd64, linux/arm64) の GHCR プッシュ
 # 4. GitHub Releases へのスタンドアロンアーカイブ・Compose テンプレート・SHA256SUMS 公開
@@ -56,12 +56,6 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-14
             arch: arm64
-            use_cross: false
-
-          # macOS Intel
-          - target: x86_64-apple-darwin
-            os: macos-13
-            arch: x86_64
             use_cross: false
 
     steps:
@@ -146,9 +140,6 @@ jobs:
             elif [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
               curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz" | tar -xz -C /tmp/
               cp -a /tmp/onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime*.dylib "${DIST_DIR}/lib/"
-            elif [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
-              curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-x64-${ORT_VERSION}.tgz" | tar -xz -C /tmp/
-              cp -a /tmp/onnxruntime-osx-x64-${ORT_VERSION}/lib/libonnxruntime*.dylib "${DIST_DIR}/lib/"
             fi
           fi
 
