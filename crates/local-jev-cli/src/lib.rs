@@ -103,6 +103,22 @@ pub enum Commands {
         #[arg(short = 's', long, default_value = "all")]
         scenario: String,
 
+        /// セッションプールサイズ。
+        #[arg(long, default_value_t = 1)]
+        pool_size: usize,
+
+        /// 単一オペレータ内の並列スレッド数 (intra-op)。
+        #[arg(long)]
+        intra_threads: Option<usize>,
+
+        /// 複数オペレータ間の並列スレッド数 (inter-op)。
+        #[arg(long)]
+        inter_threads: Option<usize>,
+
+        /// CPU メモリアリーナを無効化する (OS アロケータ mimalloc に都度返却)。
+        #[arg(long, default_value_t = false)]
+        no_mem_arena: bool,
+
         /// CI 連携用 JSON 形式出力フラグ。
         #[arg(long)]
         json: bool,

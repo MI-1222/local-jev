@@ -117,6 +117,10 @@ fn test_parse_benchmark_defaults() {
             warmup,
             provider,
             scenario,
+            pool_size,
+            intra_threads,
+            inter_threads,
+            no_mem_arena,
             json,
         } => {
             assert_eq!(model_dir, PathBuf::from("models/default"));
@@ -124,6 +128,10 @@ fn test_parse_benchmark_defaults() {
             assert_eq!(warmup, 10);
             assert_eq!(provider, None);
             assert_eq!(scenario, "all");
+            assert_eq!(pool_size, 1);
+            assert_eq!(intra_threads, None);
+            assert_eq!(inter_threads, None);
+            assert!(!no_mem_arena);
             assert!(!json);
         }
         _ => panic!("Benchmark コマンドがパースされること。"),
@@ -145,6 +153,13 @@ fn test_parse_benchmark_custom_options() {
         "coreml",
         "-s",
         "batch",
+        "--pool-size",
+        "4",
+        "--intra-threads",
+        "2",
+        "--inter-threads",
+        "1",
+        "--no-mem-arena",
         "--json",
     ];
     let cli = Cli::try_parse_from(args).expect("引数パースに成功すること。");
@@ -156,6 +171,10 @@ fn test_parse_benchmark_custom_options() {
             warmup,
             provider,
             scenario,
+            pool_size,
+            intra_threads,
+            inter_threads,
+            no_mem_arena,
             json,
         } => {
             assert_eq!(model_dir, PathBuf::from("bench_model"));
@@ -163,6 +182,10 @@ fn test_parse_benchmark_custom_options() {
             assert_eq!(warmup, 20);
             assert_eq!(provider, Some("coreml".to_string()));
             assert_eq!(scenario, "batch");
+            assert_eq!(pool_size, 4);
+            assert_eq!(intra_threads, Some(2));
+            assert_eq!(inter_threads, Some(1));
+            assert!(no_mem_arena);
             assert!(json);
         }
         _ => panic!("Benchmark コマンドがパースされること。"),

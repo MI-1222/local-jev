@@ -2,8 +2,10 @@
 # Local-Jev 自動リリース & 配布ワークフロー
 #
 # Git タグ (v*.*.*) のプッシュまたは手動実行を契機に,
-# 1. GHCR (GitHub Container Registry) への軽量 Docker イメージ Push.
-# 2. GitHub Releases へのスタンドアロンバイナリ・Compose テンプレート・チェックサム公開.
+# 1. クロスプラットフォーム・ネイティブバイナリのビルド (Linux x86_64/arm64, macOS Apple/Intel)
+# 2. ONNX Runtime (libonnxruntime) 共有ライブラリの自動バンドル & rpath 設定
+# 3. Docker Buildx による Multi-Arch コンテナイメージ (linux/amd64, linux/arm64) の GHCR プッシュ
+# 4. GitHub Releases へのスタンドアロンアーカイブ・Compose テンプレート・SHA256SUMS 公開
 # を全自動で実行する。
 # ==============================================================================
 
@@ -24,59 +26,59 @@ permissions:
   contents: write
   packages: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   # ----------------------------------------------------------------------------
-  # 1. GHCR (GitHub Packages) コンテナイメージのビルド & プッシュ
+  # 1. クロスプラットフォーム・ネイティブバイナリのビルドマトリクス
   # ----------------------------------------------------------------------------
-  docker-release:
-    name: Build & Push Docker Image to GHCR
-    runs-on: ubuntu-latest
+  matrix-build:
+    name: Build Binary (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 (glibc)
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            arch: amd64
+            use_cross: false
+
+          # Linux aarch64 (ARM64 / AWS Graviton)
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            arch: arm64
+            use_cross: true
+
+          # macOS Apple Silicon (M1/M2/M3/M4)
+          - target: aarch64-apple-darwin
+            os: macos-14
+            arch: arm64
+            use_cross: false
+
+          # macOS Intel
+          - target: x86_64-apple-darwin
+            os: macos-13
+            arch: x86_64
+            use_cross: false
+
     steps:
-      - name: ソースコードのチェックアウト,
+      - name: ソースコードのチェックアウト
         uses: actions/checkout@v4
 
-      - name: Docker Buildx のセットアップ,
-        uses: docker/setup-buildx-action@v3
+      - name: バージョン名の決定
+        id: vars
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [ -z "${VERSION}" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag_name }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
-      - name: GHCR へのログイン認証,
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Docker メタデータ (タグ・ラベル) の生成,
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
-
-      - name: CPU 推論コンテナイメージのビルド & GHCR プッシュ,
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: docker/Dockerfile.cpu
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # ----------------------------------------------------------------------------
-  # 2. スタンドアロンバイナリのビルド & GitHub Release 公開
-  # ----------------------------------------------------------------------------
-  binary-release:
-    name: Build Binary & Create GitHub Release
-    runs-on: ubuntu-24.04
-    steps:
-      - name: ソースコードのチェックアウト,
-        uses: actions/checkout@v4
-
-      - name: ビルド必須ツールのインストール,
+      - name: ビルド必須ツールのインストール (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -86,42 +88,211 @@ jobs:
             libssl-dev \
             libstdc++6
 
-      - name: Rust ツールチェーンのセットアップ,
+      - name: クロスコンパイラのセットアップ (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            libc6-dev-arm64-cross
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Rust ツールチェーンのセットアップ
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
+          targets: ${{ matrix.target }}
 
-      - name: Cargo ビルドキャッシュの復元,
+      - name: Cargo ビルドキャッシュの復元
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: local-jev CLI バイナリのビルド,
-        run: cargo build --release -p local-jev-cli
-
-      - name: 配布アーカイブおよびチェックサムの作成,
+      - name: local-jev CLI バイナリのビルド
         run: |
-          VERSION="${{ github.ref_name }}"
-          if [ -z "${VERSION}" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.tag_name }}"
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release -p local-jev-cli --target ${{ matrix.target }}
+          else
+            cargo build --release -p local-jev-cli --target ${{ matrix.target }}
           fi
 
-          RELEASE_DIR="local-jev-${VERSION}-linux-x86_64"
-          mkdir -p "${RELEASE_DIR}"
+      - name: 配布アーカイブおよび共有ライブラリの収集
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          PKG_NAME="local-jev-${VERSION}-${{ matrix.target }}"
+          DIST_DIR="dist/${PKG_NAME}"
+          mkdir -p "${DIST_DIR}/bin"
+          mkdir -p "${DIST_DIR}/lib"
 
-          # バイナリおよび設定テンプレートの配置
-          cp target/release/local-jev "${RELEASE_DIR}/"
-          cp docker-compose.yml "${RELEASE_DIR}/"
+          # 1. バイナリの配置
+          cp "target/${{ matrix.target }}/release/local-jev" "${DIST_DIR}/bin/"
+          chmod +x "${DIST_DIR}/bin/local-jev"
 
-          # tar.gz アーカイブ作成
-          tar -czvf "${RELEASE_DIR}.tar.gz" "${RELEASE_DIR}"
-          sha256sum "${RELEASE_DIR}.tar.gz" > "${RELEASE_DIR}.tar.gz.sha256"
+          # 2. ONNX Runtime 共有ライブラリの抽出
+          # ort クレートがダウンロードまたは配置した共有ライブラリを探索
+          find target -name "libonnxruntime*.so*" -exec cp -a {} "${DIST_DIR}/lib/" \; 2>/dev/null || true
+          find target -name "libonnxruntime*.dylib" -exec cp -a {} "${DIST_DIR}/lib/" \; 2>/dev/null || true
 
-      - name: GitHub Release への成果物添付と公開,
+          # 共有ライブラリがビルド成果物に見つからない場合の公式フォールバック取得
+          if [ -z "$(ls -A "${DIST_DIR}/lib" 2>/dev/null)" ]; then
+            echo "[INFO] target 内に libonnxruntime が見つからないため、公式リリース資産をダウンロードします..."
+            ORT_VERSION="1.20.1"
+            if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+              curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz" | tar -xz -C /tmp/
+              cp -a /tmp/onnxruntime-linux-x64-${ORT_VERSION}/lib/libonnxruntime.so* "${DIST_DIR}/lib/"
+            elif [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+              curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-aarch64-${ORT_VERSION}.tgz" | tar -xz -C /tmp/
+              cp -a /tmp/onnxruntime-linux-aarch64-${ORT_VERSION}/lib/libonnxruntime.so* "${DIST_DIR}/lib/"
+            elif [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then
+              curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz" | tar -xz -C /tmp/
+              cp -a /tmp/onnxruntime-osx-arm64-${ORT_VERSION}/lib/libonnxruntime*.dylib "${DIST_DIR}/lib/"
+            elif [ "${{ matrix.target }}" = "x86_64-apple-darwin" ]; then
+              curl -sSL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-x64-${ORT_VERSION}.tgz" | tar -xz -C /tmp/
+              cp -a /tmp/onnxruntime-osx-x64-${ORT_VERSION}/lib/libonnxruntime*.dylib "${DIST_DIR}/lib/"
+            fi
+          fi
+
+          # 3. 補助ファイル (Compose, ドキュメント) の配置
+          cp docker-compose.yml "${DIST_DIR}/"
+          cat << 'EOF' > "${DIST_DIR}/README.md"
+          # Local-Jev スタンドアロンバイナリパッケージ
+          
+          本パッケージには `bin/local-jev` 実行バイナリと、必要な `lib/` 共有ライブラリが同梱されています。
+          rpath が設定されているため、アーカイブを展開して即座に実行可能です。
+          
+          ## 実行例
+          ```bash
+          ./bin/local-jev --help
+          ./bin/local-jev serve --model-dir ./models/default
+          ```
+          EOF
+
+          # 4. tar.gz アーカイブおよび SHA256 チェックサムの生成
+          tar -C dist -czf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          shasum -a 256 "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256"
+
+      - name: バイナリアーティファクトのアップロード
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: |
+            local-jev-*-${{ matrix.target }}.tar.gz
+            local-jev-*-${{ matrix.target }}.tar.gz.sha256
+          retention-days: 5
+
+      # Docker ビルド用の中間バイナリ成果物の保存 (Linux のみ)
+      - name: Docker 用バイナリ成果物のアップロード
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-bin-${{ matrix.arch }}
+          path: |
+            dist/local-jev-*/bin/local-jev
+            dist/local-jev-*/lib/libonnxruntime*
+          retention-days: 1
+
+  # ----------------------------------------------------------------------------
+  # 2. Multi-Arch Docker イメージのビルド & GHCR プッシュ (Buildx)
+  # ----------------------------------------------------------------------------
+  docker-multiarch-release:
+    name: Build & Push Multi-Arch Docker Image
+    needs: [matrix-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: ソースコードのチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Docker 用バイナリ (amd64) のダウンロード
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-bin-amd64
+          path: tmp-amd64
+
+      - name: Docker 用バイナリ (arm64) のダウンロード
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-bin-arm64
+          path: tmp-arm64
+
+      - name: Docker ビルドコンテキストの組み立て
+        run: |
+          mkdir -p dist/bin/amd64 dist/lib/amd64
+          mkdir -p dist/bin/arm64 dist/lib/arm64
+
+          # amd64
+          find tmp-amd64 -name "local-jev" -type f -exec cp {} dist/bin/amd64/ \;
+          find tmp-amd64 -name "libonnxruntime*.so*" -exec cp -a {} dist/lib/amd64/ \;
+
+          # arm64
+          find tmp-arm64 -name "local-jev" -type f -exec cp {} dist/bin/arm64/ \;
+          find tmp-arm64 -name "libonnxruntime*.so*" -exec cp -a {} dist/lib/arm64/ \;
+
+          rm -rf tmp-amd64 tmp-arm64
+
+      - name: Docker Buildx のセットアップ
+        uses: docker/setup-buildx-action@v3
+
+      - name: GHCR へのログイン認証
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker メタデータ (タグ・ラベル) の生成
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            type=raw,value=cpu
+
+      - name: Multi-Arch コンテナイメージのビルド & GHCR プッシュ (Dockerfile.dist)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile.dist
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ----------------------------------------------------------------------------
+  # 3. GitHub Releases への成果物集約と公開
+  # ----------------------------------------------------------------------------
+  publish-release:
+    name: Publish Release Artifacts
+    needs: [matrix-build, docker-multiarch-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: ソースコードのチェックアウト
+        uses: actions/checkout@v4
+
+      - name: 全バイナリアーティファクトのダウンロード
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: binary-*
+          merge-multiple: true
+
+      - name: 統合 SHA256SUMS の生成
+        run: |
+          cd release-artifacts
+          shasum -a 256 local-jev-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: GitHub Release への成果物添付と公開
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
           files: |
-            local-jev-*.tar.gz
-            local-jev-*.tar.gz.sha256
+            release-artifacts/local-jev-*.tar.gz
+            release-artifacts/SHA256SUMS
             docker-compose.yml
           draft: false
           prerelease: false

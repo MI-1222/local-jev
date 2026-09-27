@@ -1,6 +1,6 @@
 [package]
 name = "local-jev-server"
-version = "0.2.4"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -23,6 +23,7 @@ indexmap = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
+mimalloc = { workspace = true }
 
 [features]
 default = ["swagger"]

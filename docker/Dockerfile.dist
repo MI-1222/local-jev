@@ -1,0 +1,58 @@
+# ==============================================================================
+# Local-Jev 超軽量・高速 Multi-Arch 配布用コンテナイメージ (Dockerfile.dist)
+#
+# 事前ビルド済みバイナリおよび libonnxruntime 共有ライブラリを注入するアセンブリ専用定義。
+# QEMU エミュレーションによるコンパイル遅延を完全排除し、
+# Buildx で瞬時に linux/amd64 および linux/arm64 の Multi-Arch イメージを生成する。
+# ==============================================================================
+
+FROM debian:bookworm-slim AS runtime
+
+ARG TARGETARCH
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 最小限の SSL 証明書と C++ ランタイムのみを導入
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# アーキテクチャに応じた事前ビルド済みバイナリおよび共有ライブラリの配置
+# ビルドコンテキストの dist/bin/${TARGETARCH}/ および dist/lib/${TARGETARCH}/ を参照
+COPY dist/lib/${TARGETARCH}/ /usr/local/lib/
+RUN ldconfig
+
+COPY dist/bin/${TARGETARCH}/local-jev /usr/local/bin/local-jev
+RUN chmod +x /usr/local/bin/local-jev
+
+# 最小権限の非 root ユーザー作成 (UID: 10001, GID: 10001)
+RUN groupadd -g 10001 jev && \
+    useradd -u 10001 -g jev -s /bin/false -M jev && \
+    mkdir -p /models && \
+    chown -R jev:jev /models
+
+# 実行ユーザーの切り替え
+USER jev
+
+# 外部通信完全遮断およびランタイム環境変数の設定
+ENV LD_LIBRARY_PATH=/usr/local/lib \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    LOCAL_JEV_HOST=0.0.0.0 \
+    LOCAL_JEV_PORT=3000 \
+    LOCAL_JEV_MODEL_DIR=/models/default \
+    LOCAL_JEV_POOL_SIZE=2 \
+    LOCAL_JEV_INTRA_THREADS=2 \
+    LOCAL_JEV_INTER_THREADS=1
+
+# HTTP API ポート公開
+EXPOSE 3000
+
+# 自己完結型ヘルスチェック (curl 不要)
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+
+# デフォルト Entrypoint
+ENTRYPOINT ["/usr/local/bin/local-jev"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "3000", "--model-dir", "/models/default"]

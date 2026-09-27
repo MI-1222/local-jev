@@ -16,6 +16,9 @@ use local_jev_cli::commands::quantize::{QuantizeArgs, run_quantize};
 use local_jev_cli::commands::serve::{ServeArgs, run_serve};
 use local_jev_cli::{Cli, Commands};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
@@ -54,6 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             warmup,
             provider,
             scenario,
+            pool_size,
+            intra_threads,
+            inter_threads,
+            no_mem_arena,
             json,
         } => {
             let args = BenchmarkArgs {
@@ -62,6 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 warmup,
                 provider,
                 scenario,
+                pool_size,
+                intra_threads,
+                inter_threads,
+                enable_mem_arena: !no_mem_arena,
                 json,
             };
             // CPU バウンドな計算ループをワーカースレッドのブロッキングから分離

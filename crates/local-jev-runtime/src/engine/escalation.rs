@@ -266,6 +266,21 @@ impl EscalationPromptBuilder {
             );
         }
 
+        if let Some(energy) = meta.energy {
+            let _ = writeln!(
+                prompt,
+                "- **正規化自由エネルギー (Free Energy)**: {:.3}",
+                energy
+            );
+        }
+
+        if meta.is_ood {
+            let _ = writeln!(
+                prompt,
+                "- **OOD 異常検知**: 未定義カテゴリ・該当なし (Out-of-Distribution)"
+            );
+        }
+
         if !candidates.is_empty() {
             prompt.push_str("- **上位予測候補と確率**:\n");
             for (idx, cand) in candidates.iter().take(3).enumerate() {
@@ -303,27 +318,35 @@ impl EscalationPromptBuilder {
         let q_type = question.map(|q| q.question_type);
         match q_type {
             Some(QuestionType::Choice) => {
-                let is_confirm =
-                    meta.route == DecisionRoute::ConfirmOrEscalate && candidates.len() >= 2;
-
-                if is_confirm {
-                    let c1 = &candidates[0];
-                    let c2 = &candidates[1];
-                    let _ = writeln!(
-                        prompt,
-                        "質問について、System 1 の判定では候補「{}」(確信度 {:.1}%) と「{}」(確信度 {:.1}%) の間で迷いが生じています (確率差: {:.1}%)。\n\
-                        State の記述を精読し、両候補の定義・前提条件・例外規定の差異をステップ・バイ・ステップで比較・検証して、思考連鎖 (Chain-of-Thought) に基づき最適な決定を行ってください。",
-                        c1.candidate,
-                        c1.probability * 100.0,
-                        c2.candidate,
-                        c2.probability * 100.0,
-                        meta.margin.unwrap_or(0.0) * 100.0
+                if meta.is_ood {
+                    prompt.push_str(
+                        "【未定義カテゴリ・該当なし (Out-of-Distribution) の警告】\n\
+                        入力文脈は、提示された選択肢のいずれにも該当しない未定義カテゴリ (None of the above / 該当なし) である可能性が極めて高いと診断されました。\n\
+                        既存の選択肢へ無理に当てはめることを避け、該当なしや例外エスカレーションの妥当性を最優先でステップ・バイ・ステップで検証してください。\n",
                     );
                 } else {
-                    prompt.push_str(
-                        "突出した確信度を持つ候補が存在せず、全体的に判断が割れています。\n\
-                        State 内の判断材料の不足、または既存の選択肢のいずれにも当てはまらない(該当なし・その他)可能性を考慮し、思考連鎖 (Chain-of-Thought) に基づき論理的に判断してください。\n",
-                    );
+                    let is_confirm =
+                        meta.route == DecisionRoute::ConfirmOrEscalate && candidates.len() >= 2;
+
+                    if is_confirm {
+                        let c1 = &candidates[0];
+                        let c2 = &candidates[1];
+                        let _ = writeln!(
+                            prompt,
+                            "質問について、System 1 の判定では候補「{}」(確信度 {:.1}%) と「{}」(確信度 {:.1}%) の間で迷いが生じています (確率差: {:.1}%)。\n\
+                            State の記述を精読し、両候補の定義・前提条件・例外規定の差異をステップ・バイ・ステップで比較・検証して、思考連鎖 (Chain-of-Thought) に基づき最適な決定を行ってください。",
+                            c1.candidate,
+                            c1.probability * 100.0,
+                            c2.candidate,
+                            c2.probability * 100.0,
+                            meta.margin.unwrap_or(0.0) * 100.0
+                        );
+                    } else {
+                        prompt.push_str(
+                            "突出した確信度を持つ候補が存在せず、全体的に判断が割れています。\n\
+                            State 内の判断材料の不足、または既存の選択肢のいずれにも当てはまらない(該当なし・その他)可能性を考慮し、思考連鎖 (Chain-of-Thought) に基づき論理的に判断してください。\n",
+                        );
+                    }
                 }
             }
             Some(QuestionType::Score) => {
@@ -419,6 +442,8 @@ mod tests {
             confidence: 0.52,
             entropy: Some(0.48),
             margin: Some(0.04),
+            energy: None,
+            is_ood: false,
             reason: "上位2候補の確率差(0.040 < 0.150)が僅差のため確認要求に降格しました。"
                 .to_string(),
             escalation: None,
@@ -481,6 +506,8 @@ mod tests {
             confidence: 0.20,
             entropy: Some(0.80),
             margin: None,
+            energy: None,
+            is_ood: false,
             reason: "確信度不足".to_string(),
             escalation: None,
         };
@@ -502,6 +529,8 @@ mod tests {
             confidence: 0.51,
             entropy: Some(0.99),
             margin: Some(0.02),
+            energy: None,
+            is_ood: false,
             reason: "二値確率が拮抗".to_string(),
             escalation: None,
         };
@@ -517,10 +546,63 @@ mod tests {
             },
         ];
 
-        let prompt =
-            build_rich_escalation_prompt(Some(state), Some("defect"), Some(&q), &meta, &candidates);
-        assert!(prompt.contains("二値判定 (true / false)"));
-        assert!(prompt.contains("言明に対する真偽の確率が拮抗"));
-        assert!(prompt.contains("思考連鎖 (Chain-of-Thought)"));
+        let prompt = build_rich_escalation_prompt(
+            Some(state),
+            Some("is_defect"),
+            Some(&q),
+            &meta,
+            &candidates,
+        );
+        assert!(prompt.contains("言明に対する真偽の確率が拮抗しています。"));
+    }
+
+    #[test]
+    fn test_escalation_prompt_choice_ood() {
+        let mut criteria = IndexMap::new();
+        criteria.insert("fraud".to_string(), "不正アクセス".to_string());
+        criteria.insert("chargeback".to_string(), "チャージバック".to_string());
+
+        let q = Question::new_choice("決済障害の種別を判定せよ。", criteria);
+        let state = "本日の天気は快晴で、最高気温は25度となる見込みです。";
+
+        let meta = GatingMetadata {
+            route: DecisionRoute::Fallback,
+            confidence: 0.55,
+            entropy: Some(0.95),
+            margin: Some(0.10),
+            energy: Some(0.85),
+            is_ood: true,
+            reason: "正規化自由エネルギー(0.850 > -1.000)が閾値を超過したため、未定義カテゴリまたは該当なし(OOD)として安全弁フォールバックを適用しました。".to_string(),
+            escalation: None,
+        };
+
+        let candidates = vec![
+            CandidateProbability {
+                candidate: "fraud".to_string(),
+                probability: 0.55,
+            },
+            CandidateProbability {
+                candidate: "chargeback".to_string(),
+                probability: 0.45,
+            },
+        ];
+
+        let prompt = build_rich_escalation_prompt(
+            Some(state),
+            Some("incident_type"),
+            Some(&q),
+            &meta,
+            &candidates,
+        );
+
+        // 診断レポートに自由エネルギーとOOD異常検知が含まれること
+        assert!(prompt.contains("正規化自由エネルギー (Free Energy)"));
+        assert!(prompt.contains("0.85"));
+        assert!(prompt.contains("OOD 異常検知"));
+
+        // OOD 特化の思考連鎖警告が含まれること
+        assert!(prompt.contains("未定義カテゴリ・該当なし (Out-of-Distribution) の警告"));
+        assert!(prompt.contains("None of the above / 該当なし"));
+        assert!(prompt.contains("既存の選択肢へ無理に当てはめることを避け"));
     }
 }

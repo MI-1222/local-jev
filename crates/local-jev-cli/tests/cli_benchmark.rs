@@ -22,6 +22,10 @@ fn test_run_benchmark_fast_smoke() {
         warmup: 1,
         provider: Some("cpu".to_string()),
         scenario: "single".to_string(),
+        pool_size: 1,
+        intra_threads: None,
+        inter_threads: None,
+        enable_mem_arena: true,
         json: false,
     };
 
@@ -43,6 +47,10 @@ fn test_run_benchmark_json_output() {
         warmup: 1,
         provider: Some("cpu".to_string()),
         scenario: "scratchpad".to_string(),
+        pool_size: 1,
+        intra_threads: None,
+        inter_threads: None,
+        enable_mem_arena: true,
         json: true,
     };
 

@@ -2,22 +2,56 @@
 # ==============================================================================
 # Local-Jev エアギャップ (外部ネットワーク完全遮断) 起動検証スクリプト
 #
-# Docker の `--network none` フラグを用いてコンテナの外部通信を物理的に遮断し、
+# Docker の `--network none` フラグを用いてコンテナの外部通信を物理的に遮断し,
 # 外部名前解決や Hugging Face Hub 等への暗黙の通信を一切行わずに
-# モデル推論が 100% 自己完結して動作することを検証する。
+# モデル推論が 100% 自己完結して動作すること, および常駐 RAM (< 1GB) を検証する。
 # ==============================================================================
 
 set -euo pipefail
 
-IMAGE_NAME="${1:-local-jev:cpu}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-MODEL_DIR="${ROOT_DIR}/models/default"
+
+IMAGE_NAME="${1:-local-jev:cpu}"
+TIER="${2:-tier2}"
+MODEL_DIR=""
+
+# オプション解析
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --tier)
+            TIER="$2"
+            shift 2
+            ;;
+        --image)
+            IMAGE_NAME="$2"
+            shift 2
+            ;;
+        --model-dir)
+            MODEL_DIR="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ -z "${MODEL_DIR}" ]]; then
+    if [[ "${TIER}" == "tier1" && -d "${ROOT_DIR}/models/quantized" ]]; then
+        MODEL_DIR="${ROOT_DIR}/models/quantized"
+    elif [[ "${TIER}" == "tier2" && -d "${ROOT_DIR}/models/modernbert-310m-int8" ]]; then
+        MODEL_DIR="${ROOT_DIR}/models/modernbert-310m-int8"
+    else
+        MODEL_DIR="${ROOT_DIR}/models/default"
+    fi
+fi
 
 echo "=================================================================="
-echo "Local-Jev エアギャップ検証テストを開始します"
-echo "イメージ: ${IMAGE_NAME}"
-echo "モデルパス: ${MODEL_DIR}"
+echo "Local-Jev エアギャップ検証テストを開始します。"
+echo "イメージ: ${IMAGE_NAME}."
+echo "モデル Tier: ${TIER}."
+echo "モデルパス: ${MODEL_DIR}."
 echo "=================================================================="
 
 # 1. モデルディレクトリの存在確認
@@ -31,7 +65,7 @@ if [[ ! -f "${MODEL_DIR}/model.onnx" || ! -f "${MODEL_DIR}/tokenizer.json" ]]; t
     exit 1
 fi
 
-# 2. イメージの存在確認 (存在しない場合はビルドを案内)
+# 2. イメージの存在確認 (存在しない場合は案内)
 if ! docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1; then
     echo "[INFO] イメージ '${IMAGE_NAME}' がローカルに存在しないため、ビルドを実行します..."
     docker build -t "${IMAGE_NAME}" -f "${ROOT_DIR}/docker/Dockerfile.cpu" "${ROOT_DIR}"
@@ -53,7 +87,7 @@ docker run --rm \
 
 echo "[SUCCESS] エアギャップ環境でのインプロセス推論に成功しました。"
 
-# 4. バックグラウンドサーバー起動とローカルヘルスチェック検証
+# 4. バックグラウンドサーバー起動とローカルヘルスチェック & メモリ検証
 echo ""
 echo ">>> Step 2: 独立ネットワーク名前空間でのサーバー起動 & ヘルスチェック検証"
 CONTAINER_NAME="local-jev-airgap-test-$$"
@@ -94,12 +128,17 @@ while [[ ${ATTEMPTS} -lt ${MAX_ATTEMPTS} ]]; do
 done
 
 if [[ "${HEALTHY}" == "true" ]]; then
-    echo "[SUCCESS] エアギャップ環境で サーバーの起動および /ready エンドポイントの正常応答を確認しました。"
+    echo "[SUCCESS] エアギャップ環境でサーバー起動および /ready エンドポイントの正常応答を確認しました。"
 else
     echo "[ERROR] サーバーの初期化がタイムアウトしました。コンテナログを出力します:" >&2
     docker logs "${CONTAINER_NAME}" >&2
     exit 1
 fi
+
+# メモリフットプリントの確認 (RAM < 1GB)
+echo ""
+echo ">>> Step 3: 常駐メモリ (RSS) の計測"
+docker stats --no-stream --format "table {{.Container}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" "${CONTAINER_NAME}"
 
 echo ""
 echo "=================================================================="

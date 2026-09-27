@@ -284,6 +284,8 @@ mod tests {
             confidence: 0.95,
             entropy: None,
             margin: None,
+            energy: None,
+            is_ood: false,
             reason: "高確信度判定".to_string(),
             escalation: None,
         });

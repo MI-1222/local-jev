@@ -37,6 +37,8 @@ fn test_choice_margin_collapse_prompt() {
         confidence: 0.54,
         entropy: Some(0.46),
         margin: Some(0.04),
+        energy: None,
+        is_ood: false,
         reason: "上位2候補の確率差(0.040 < 0.150)が僅差のため確認要求に降格しました。".to_string(),
         escalation: None,
     };
@@ -109,6 +111,8 @@ fn test_choice_high_entropy_uniform_prompt() {
         confidence: 0.25,
         entropy: Some(0.92),
         margin: Some(0.01),
+        energy: None,
+        is_ood: false,
         reason: "実効確信度(0.250 < 0.350)が低水準のため安全弁フォールバックを適用しました。"
             .to_string(),
         escalation: None,
@@ -153,6 +157,8 @@ fn test_score_adjacent_vs_bimodal_prompt() {
         confidence: 0.50,
         entropy: Some(0.20),
         margin: Some(0.05),
+        energy: None,
+        is_ood: false,
         reason: "隣接スコア間で拮抗".to_string(),
         escalation: None,
     };
@@ -174,6 +180,8 @@ fn test_score_adjacent_vs_bimodal_prompt() {
         confidence: 0.30,
         entropy: Some(0.65),
         margin: None,
+        energy: None,
+        is_ood: false,
         reason: "両極端に確率が分散".to_string(),
         escalation: None,
     };
@@ -198,6 +206,8 @@ fn test_noul_prompt() {
         confidence: 0.50,
         entropy: Some(0.999),
         margin: Some(0.005),
+        energy: None,
+        is_ood: false,
         reason: "真偽判定が拮抗".to_string(),
         escalation: None,
     };
@@ -248,6 +258,8 @@ fn test_large_candidate_compression() {
         confidence: 0.45,
         entropy: Some(0.55),
         margin: Some(0.02),
+        energy: None,
+        is_ood: false,
         reason: "僅差".to_string(),
         escalation: None,
     };
@@ -308,4 +320,51 @@ fn test_zero_allocation_on_auto_execute() {
     assert_eq!(gating.route, DecisionRoute::AutoExecute);
     // AutoExecute の時は escalation が None であり、プロンプト生成は一切実行されない
     assert!(gating.escalation.is_none());
+}
+
+#[test]
+fn test_choice_ood_prompt() {
+    let mut criteria = IndexMap::new();
+    criteria.insert("fraud".to_string(), "不正アクセス".to_string());
+    criteria.insert("chargeback".to_string(), "チャージバック".to_string());
+
+    let q = Question::new_choice("決済障害の種別を判定せよ。", criteria);
+    let state = "本日の天気は快晴で、最高気温は25度となる見込みです。";
+
+    let meta = GatingMetadata {
+        route: DecisionRoute::Fallback,
+        confidence: 0.60,
+        entropy: Some(0.90),
+        margin: Some(0.15),
+        energy: Some(0.95),
+        is_ood: true,
+        reason: "正規化自由エネルギー(0.950 > -1.000)が閾値を超過したため、未定義カテゴリまたは該当なし(OOD)として安全弁フォールバックを適用しました。".to_string(),
+        escalation: None,
+    };
+
+    let candidates = vec![
+        CandidateProbability {
+            candidate: "fraud".to_string(),
+            probability: 0.58,
+        },
+        CandidateProbability {
+            candidate: "chargeback".to_string(),
+            probability: 0.42,
+        },
+    ];
+
+    let prompt = build_rich_escalation_prompt(
+        Some(state),
+        Some("incident_type"),
+        Some(&q),
+        &meta,
+        &candidates,
+    );
+
+    assert!(prompt.contains("正規化自由エネルギー (Free Energy)"));
+    assert!(prompt.contains("0.95"));
+    assert!(prompt.contains("OOD 異常検知"));
+    assert!(prompt.contains("未定義カテゴリ・該当なし (Out-of-Distribution) の警告"));
+    assert!(prompt.contains("None of the above / 該当なし"));
+    assert!(prompt.contains("既存の選択肢へ無理に当てはめることを避け"));
 }

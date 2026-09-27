@@ -1,6 +1,6 @@
 services:
   # ----------------------------------------------------------------------------
-  # CPU 推論サービス (デフォルト)
+  # CPU 推論サービス (標準高精度: Tier 2 - 310M-INT8)
   # ----------------------------------------------------------------------------
   local-jev-cpu:
     build:
@@ -16,13 +16,13 @@ services:
       - LOCAL_JEV_PORT=3000
       - LOCAL_JEV_MODEL_DIR=/models/default
       - LOCAL_JEV_POOL_SIZE=2
-      - LOCAL_JEV_INTRA_THREADS=2
+      - LOCAL_JEV_INTRA_THREADS=4
       - LOCAL_JEV_INTER_THREADS=1
       - RUST_LOG=local_jev_server=info,local_jev_cli=info,tower_http=info
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
     volumes:
-      - ./models/default:/models/default:ro
+      - ./models/modernbert-310m-int8:/models/default:ro
     healthcheck:
       test: ["CMD", "/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
       interval: 10s
@@ -33,9 +33,81 @@ services:
       resources:
         limits:
           cpus: "4.0"
-          memory: 4G
+          memory: 1G
         reservations:
           cpus: "1.0"
+          memory: 512M
+
+  # ----------------------------------------------------------------------------
+  # CPU 極小エッジ推論サービス (Tier 1 - 130M-INT8)
+  # ----------------------------------------------------------------------------
+  local-jev-tier1:
+    profiles: ["tier1"]
+    image: local-jev:cpu
+    container_name: local-jev-tier1
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      - LOCAL_JEV_HOST=0.0.0.0
+      - LOCAL_JEV_PORT=3000
+      - LOCAL_JEV_MODEL_DIR=/models/default
+      - LOCAL_JEV_POOL_SIZE=2
+      - LOCAL_JEV_INTRA_THREADS=2
+      - LOCAL_JEV_INTER_THREADS=1
+      - RUST_LOG=local_jev_server=info,local_jev_cli=info,tower_http=info
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    volumes:
+      - ./models/quantized:/models/default:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+
+  # ----------------------------------------------------------------------------
+  # All-in-One 自己完結型サービス (モデル内包・マウント不要)
+  # ----------------------------------------------------------------------------
+  local-jev-allinone:
+    profiles: ["allinone"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.allinone
+      args:
+        MODEL_TIER: tier2
+    image: local-jev:allinone-tier2
+    container_name: local-jev-allinone
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    environment:
+      - LOCAL_JEV_HOST=0.0.0.0
+      - LOCAL_JEV_PORT=3000
+      - LOCAL_JEV_POOL_SIZE=2
+      - LOCAL_JEV_INTRA_THREADS=4
+      - LOCAL_JEV_INTER_THREADS=1
+      - RUST_LOG=local_jev_server=info,local_jev_cli=info,tower_http=info
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
           memory: 1G
 
   # ----------------------------------------------------------------------------
@@ -50,7 +122,7 @@ services:
     container_name: local-jev-gpu
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3003:3000"
     environment:
       - LOCAL_JEV_HOST=0.0.0.0
       - LOCAL_JEV_PORT=3000
@@ -63,7 +135,7 @@ services:
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
     volumes:
-      - ./models/default:/models/default:ro
+      - ./models/modernbert-310m-int8:/models/default:ro
       - /tmp/ort_trt_cache:/tmp/ort_trt_cache
     healthcheck:
       test: ["CMD", "/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]

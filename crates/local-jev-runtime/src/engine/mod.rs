@@ -21,6 +21,10 @@ pub use config::{ExecutionProvider, OptimizationLevel, SessionConfig};
 pub use escalation::{
     EscalationPromptBuilder, EscalationTemplateConfig, build_rich_escalation_prompt,
 };
-pub use gating::{apply_gating_to_answer, apply_gating_to_answers, resolve_gating_config};
+pub use gating::{
+    apply_gating_to_answer, apply_gating_to_answer_with_energy, apply_gating_to_answer_with_logits,
+    apply_gating_to_answers, apply_gating_to_answers_with_logits, calculate_choice_energy,
+    resolve_gating_config,
+};
 pub use provider::register_execution_providers;
 pub use session::InferenceEngine;

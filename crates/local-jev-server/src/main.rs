@@ -12,6 +12,9 @@ use local_jev_runtime::tokenizer::JevTokenizer;
 use local_jev_server::metrics::setup_metrics_recorder;
 use local_jev_server::state::AppState;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // 構造化ログトレーシングの初期化
@@ -55,8 +58,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(2);
 
+    let intra_threads = std::env::var("LOCAL_JEV_INTRA_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok());
+    let inter_threads = std::env::var("LOCAL_JEV_INTER_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .or(Some(1));
+
     let session_config = SessionConfig {
         pool_size,
+        intra_threads,
+        inter_threads,
         ..Default::default()
     };
 

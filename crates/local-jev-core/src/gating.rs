@@ -25,6 +25,12 @@ pub const DEFAULT_LOW_CONFIDENCE_THRESHOLD: f64 = 0.35;
 /// デフォルトの上位 2 候補確率マージン閾値。
 pub const DEFAULT_TOP_MARGIN_THRESHOLD: f64 = 0.15;
 
+/// デフォルトの OOD 自由エネルギー棄却閾値 (正規化自由エネルギー基準)。
+///
+/// Choice 型の正規化自由エネルギー $E_{\text{norm}}(x; C)$ がこの値を超過した場合、
+/// 未定義カテゴリまたは該当なし入力 (OOD) と判定して `Fallback` へ短絡ルーティングする。
+pub const DEFAULT_ENERGY_THRESHOLD: f64 = -1.0;
+
 /// 浮動小数点比較時の微小許容誤差。
 const EPSILON: f64 = 1e-9;
 
@@ -81,6 +87,36 @@ pub struct GatingConfig {
     /// 選択肢間で拮抗が生じていると判断し、強制的に `ConfirmOrEscalate` へ降格する。
     #[serde(default = "default_top_margin_threshold")]
     pub top_margin_threshold: f64,
+
+    /// Energy-based OOD 安全弁を有効化するかどうか (デフォルト: true)。
+    #[serde(default = "default_true")]
+    pub ood_enabled: bool,
+
+    /// OOD 判定用の正規化自由エネルギー閾値 (デフォルト: -1.0)。
+    ///
+    /// Choice 型において正規化自由エネルギー $E_{\text{norm}}$ がこの値を超過した場合、
+    /// 未定義カテゴリ・該当なしとして強制的に `Fallback` へ降格する。
+    #[serde(default = "default_energy_threshold")]
+    pub energy_threshold: f64,
+
+    /// OOD 自由エネルギー算出専用の温度パラメータ。
+    ///
+    /// Softmax 確率較正温度とは独立に、低発火・高コントラストな自由エネルギーを算出するために使用する。
+    /// 未指定時はモデル成果物のキャリブレーション設定にフォールバックする。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy_temperature: Option<f64>,
+
+    /// ハイブリッド OOD 判定用の緩和正規化自由エネルギー閾値 (任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loose_energy_threshold: Option<f64>,
+
+    /// ハイブリッド OOD 判定用の最小確信度閾値 (任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ood_min_confidence: Option<f64>,
+
+    /// ハイブリッド OOD 判定用の最小マージン閾値 (任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ood_min_margin: Option<f64>,
 }
 
 fn default_true() -> bool {
@@ -99,6 +135,10 @@ fn default_top_margin_threshold() -> f64 {
     DEFAULT_TOP_MARGIN_THRESHOLD
 }
 
+fn default_energy_threshold() -> f64 {
+    DEFAULT_ENERGY_THRESHOLD
+}
+
 impl Default for GatingConfig {
     fn default() -> Self {
         Self {
@@ -106,6 +146,12 @@ impl Default for GatingConfig {
             high_threshold: DEFAULT_HIGH_CONFIDENCE_THRESHOLD,
             low_threshold: DEFAULT_LOW_CONFIDENCE_THRESHOLD,
             top_margin_threshold: DEFAULT_TOP_MARGIN_THRESHOLD,
+            ood_enabled: true,
+            energy_threshold: DEFAULT_ENERGY_THRESHOLD,
+            energy_temperature: None,
+            loose_energy_threshold: None,
+            ood_min_confidence: None,
+            ood_min_margin: None,
         }
     }
 }
@@ -142,6 +188,44 @@ impl GatingConfig {
                 message: format!(
                     "top_margin_threshold ({}) は 0.0〜1.0 の範囲である必要があります。",
                     self.top_margin_threshold
+                ),
+            });
+        }
+        if !self.energy_threshold.is_finite() {
+            return Err(CoreError::InvalidGatingConfig {
+                message: format!(
+                    "energy_threshold ({}) は有限実数である必要があります。",
+                    self.energy_threshold
+                ),
+            });
+        }
+        if let Some(t) = self.energy_temperature
+            && (!t.is_finite() || t <= 0.0)
+        {
+            return Err(CoreError::InvalidGatingConfig {
+                message: format!(
+                    "energy_temperature ({}) は正の有限実数である必要があります。",
+                    t
+                ),
+            });
+        }
+        if let Some(c) = self.ood_min_confidence
+            && !(0.0..=1.0).contains(&c)
+        {
+            return Err(CoreError::InvalidGatingConfig {
+                message: format!(
+                    "ood_min_confidence ({}) は 0.0〜1.0 の範囲である必要があります。",
+                    c
+                ),
+            });
+        }
+        if let Some(m) = self.ood_min_margin
+            && !(0.0..=1.0).contains(&m)
+        {
+            return Err(CoreError::InvalidGatingConfig {
+                message: format!(
+                    "ood_min_margin ({}) は 0.0〜1.0 の範囲である必要があります。",
+                    m
                 ),
             });
         }
@@ -201,6 +285,14 @@ pub struct GatingMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub margin: Option<f64>,
 
+    /// 算出された正規化自由エネルギー値。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy: Option<f64>,
+
+    /// 未定義カテゴリ・該当なし (OOD) として検知されたかどうかの真偽値。
+    #[serde(default)]
+    pub is_ood: bool,
+
     /// 判定根拠の説明文 (監査証跡用)。
     pub reason: String,
 
@@ -253,6 +345,32 @@ pub fn evaluate_answer_gating(
     question_id: Option<&str>,
     question: Option<&Question>,
     config: &GatingConfig,
+) -> GatingMetadata {
+    evaluate_answer_gating_with_energy(answer, question_id, question, config, None)
+}
+
+/// 単一の `Answer` に対し、自由エネルギー情報を含めて確信度ゲーティング評価を実施し、メタデータを生成する。
+///
+/// # 概要
+/// - 通常の確信度・マージン判定に先立ち、Energy-based OOD 安全弁 (Circuit Breaker) を評価する。
+/// - Choice 型において正規化自由エネルギー $E_{\text{norm}}$ が `config.energy_threshold` を超過した場合、
+///   高確信度判定をショートサーキットし、強制的に `DecisionRoute::Fallback` へ降格する。
+///
+/// # 引数
+/// - `answer`: 事後較正済みの判定結果。
+/// - `question_id`: 質問識別子(プロンプト構築用、任意)。
+/// - `question`: 質問定義(指示文やタイプ取得用、任意)。
+/// - `config`: ゲーティング設定。
+/// - `energy`: 算出された正規化自由エネルギー値 (任意)。
+///
+/// # 戻り値
+/// - 導出された `GatingMetadata`。
+pub fn evaluate_answer_gating_with_energy(
+    answer: &Answer,
+    question_id: Option<&str>,
+    question: Option<&Question>,
+    config: &GatingConfig,
+    energy: Option<f64>,
 ) -> GatingMetadata {
     let conf = answer.effective_confidence().unwrap_or(0.0).clamp(0.0, 1.0);
 
@@ -315,8 +433,67 @@ pub fn evaluate_answer_gating(
         _ => None,
     };
 
-    // 閾値判定とマージンガード。
-    let (route, reason) = if conf >= config.high_threshold - EPSILON {
+    // OOD 判定 (Pre-filter / Circuit Breaker): Choice 型かつ ood_enabled
+    let is_choice = question
+        .map(|q| q.question_type == QuestionType::Choice)
+        .unwrap_or(false)
+        || answer.choice.is_some();
+
+    let (is_ood, ood_reason) = if config.ood_enabled && is_choice {
+        if let Some(e) = energy {
+            let is_hard_energy_ood = e > config.energy_threshold;
+            let is_hybrid_ood = if let (Some(loose_th), Some(min_conf), Some(min_margin)) = (
+                config.loose_energy_threshold,
+                config.ood_min_confidence,
+                config.ood_min_margin,
+            ) {
+                let m = margin.unwrap_or(0.0);
+                e > loose_th && (conf < min_conf || m < min_margin)
+            } else {
+                false
+            };
+
+            if is_hard_energy_ood {
+                (
+                    true,
+                    Some(format!(
+                        "正規化自由エネルギー({:.3} > {:.3})が閾値を超過したため、未定義カテゴリまたは該当なし(OOD)として安全弁フォールバックを適用しました。",
+                        e, config.energy_threshold
+                    )),
+                )
+            } else if is_hybrid_ood {
+                let m = margin.unwrap_or(0.0);
+                (
+                    true,
+                    Some(format!(
+                        "正規化自由エネルギー({:.3} > {:.3})かつ不確実性(確信度={:.3} < {:.3} または マージン={:.3} < {:.3})の複合条件を満たしたため、該当なし(OOD)として安全弁フォールバックを適用しました。",
+                        e,
+                        config.loose_energy_threshold.unwrap(),
+                        conf,
+                        config.ood_min_confidence.unwrap(),
+                        m,
+                        config.ood_min_margin.unwrap()
+                    )),
+                )
+            } else {
+                (false, None)
+            }
+        } else {
+            (false, None)
+        }
+    } else {
+        (false, None)
+    };
+
+    // 閾値判定とマージンガード (OOD 検知時は最優先で Fallback へ短絡降格)。
+    let (route, reason) = if is_ood {
+        (
+            DecisionRoute::Fallback,
+            ood_reason.unwrap_or_else(|| {
+                "OOD 安全弁回路が作動したため安全弁フォールバックを適用しました。".to_string()
+            }),
+        )
+    } else if conf >= config.high_threshold - EPSILON {
         if let Some(m) = margin {
             if m < config.top_margin_threshold - EPSILON {
                 (
@@ -419,6 +596,8 @@ pub fn evaluate_answer_gating(
         confidence: conf,
         entropy,
         margin,
+        energy,
+        is_ood,
         reason,
         escalation,
     }
@@ -541,8 +720,17 @@ mod tests {
             high_threshold: 0.30,
             low_threshold: 0.50,
             top_margin_threshold: 0.15,
+            ood_enabled: true,
+            energy_threshold: -1.0,
+            ..GatingConfig::default()
         };
         assert!(invalid_config.validate().is_err());
+
+        let invalid_energy_config = GatingConfig {
+            energy_threshold: f64::NAN,
+            ..GatingConfig::default()
+        };
+        assert!(invalid_energy_config.validate().is_err());
     }
 
     #[test]
@@ -636,6 +824,8 @@ mod tests {
             confidence: 0.95,
             entropy: None,
             margin: None,
+            energy: None,
+            is_ood: false,
             reason: String::new(),
             escalation: None,
         });
@@ -645,6 +835,8 @@ mod tests {
             confidence: 0.50,
             entropy: None,
             margin: None,
+            energy: None,
+            is_ood: false,
             reason: String::new(),
             escalation: None,
         });
@@ -665,6 +857,8 @@ mod tests {
             confidence: 0.20,
             entropy: None,
             margin: None,
+            energy: None,
+            is_ood: false,
             reason: String::new(),
             escalation: None,
         });
@@ -674,5 +868,79 @@ mod tests {
         assert_eq!(summary_fallback.aggregate_route, DecisionRoute::Fallback);
         assert_eq!(summary_fallback.fallback_count, 1);
         assert!(summary_fallback.escalation_needed);
+    }
+
+    #[test]
+    fn test_evaluate_answer_gating_ood_short_circuit() {
+        // 見かけ上は高確信度 (conf=0.90, margin=0.80) だが、自由エネルギーが異常に高い (energy=0.5 > -1.0)
+        let mut probs = IndexMap::new();
+        probs.insert("tech_support".to_string(), 0.90);
+        probs.insert("billing".to_string(), 0.10);
+        let answer = Answer::choice("tech_support", probs, 0.90);
+
+        let config = GatingConfig::default();
+        // OOD 入力: energy = 0.5 (閾値 -1.0 を超過)
+        let meta = evaluate_answer_gating_with_energy(
+            &answer,
+            Some("department"),
+            None,
+            &config,
+            Some(0.5),
+        );
+
+        // 高確信度をショートサーキットして強制的に Fallback へ降格
+        assert_eq!(meta.route, DecisionRoute::Fallback);
+        assert!(meta.is_ood);
+        assert_eq!(meta.energy, Some(0.5));
+        assert!(meta.reason.contains("未定義カテゴリまたは該当なし(OOD)"));
+        assert!(meta.escalation.is_some());
+    }
+
+    #[test]
+    fn test_evaluate_answer_gating_ood_id_pass() {
+        // 既知の適合入力 (ID): energy = -3.5 <= -1.0 で正常
+        let mut probs = IndexMap::new();
+        probs.insert("tech_support".to_string(), 0.90);
+        probs.insert("billing".to_string(), 0.10);
+        let answer = Answer::choice("tech_support", probs, 0.90);
+
+        let config = GatingConfig::default();
+        let meta = evaluate_answer_gating_with_energy(
+            &answer,
+            Some("department"),
+            None,
+            &config,
+            Some(-3.5),
+        );
+
+        assert_eq!(meta.route, DecisionRoute::AutoExecute);
+        assert!(!meta.is_ood);
+        assert_eq!(meta.energy, Some(-3.5));
+        assert!(meta.escalation.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_answer_gating_ood_disabled() {
+        // ood_enabled が false の場合、エネルギーが高くても OOD 安全弁が発動しない
+        let mut probs = IndexMap::new();
+        probs.insert("tech_support".to_string(), 0.90);
+        probs.insert("billing".to_string(), 0.10);
+        let answer = Answer::choice("tech_support", probs, 0.90);
+
+        let config = GatingConfig {
+            ood_enabled: false,
+            ..Default::default()
+        };
+
+        let meta = evaluate_answer_gating_with_energy(
+            &answer,
+            Some("department"),
+            None,
+            &config,
+            Some(0.5),
+        );
+
+        assert_eq!(meta.route, DecisionRoute::AutoExecute);
+        assert!(!meta.is_ood);
     }
 }

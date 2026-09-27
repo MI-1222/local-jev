@@ -426,7 +426,7 @@ pub fn normalized_variance_confidence(probabilities: &[f64]) -> Result<f64> {
 ///
 /// # 概要
 /// - $M$ 段階における理論最大分散 $V_{\max} = \frac{(M-1)^2}{4}$ に対する比率を計算する。
-/// - 両端（$0$ と $M-1$）に $0.5$ ずつ配分された完全二峰性分布では $1.0$ となる。
+/// - 両端($0$ と $M-1$)に $0.5$ ずつ配分された完全二峰性分布では $1.0$ となる。
 ///
 /// # 引数
 /// - `probabilities`: 各段階レベルの確率分布スライス ($M \ge 2$)。
@@ -455,10 +455,10 @@ pub fn score_variance_ratio(probabilities: &[f64]) -> Result<f64> {
 /// Score 型の確率分布から双峰性係数 (Bimodality Coefficient: $BC$) を算出する。
 ///
 /// # 概要
-/// - 離散確率分布における母集団中心モーメント（2次、3次、4次）を直接算出し、
+/// - 離散確率分布における母集団中心モーメント(2次、3次、4次)を直接算出し、
 ///   標本補正項による $M \le 3$ でのゼロ除算クラッシュを完全に排除した閉じた数理計算を行う。
 /// - 単峰性分布では $BC < 0.555$ となり、完全一様分布では $BC \approx 0.555$、
-///   両端対立（二極化）分布では $BC \to 1.0$ へ漸近する。
+///   両端対立(二極化)分布では $BC \to 1.0$ へ漸近する。
 /// - 極小分散 ($\sigma^2 < 10^{-6}$) の場合は、完全単峰・高確信度と判定してゼロ除算を回避し、
 ///   即座に $0.0$ を返却する。
 ///
@@ -581,6 +581,103 @@ pub fn noul_confidence(probability: f64) -> Result<f64> {
 
     let conf = (2.0 * probability - 1.0).abs();
     Ok(conf.clamp(0.0, 1.0))
+}
+
+/// ロジット列からヘルムホルツ自由エネルギー (Free Energy) を算出する。
+///
+/// # 概要
+/// - Softmax 正規化前の全ロジットの絶対的な発火強度を測定し、未定義カテゴリや未知の入力 (Out-of-Distribution: OOD) を検知するための指標である。
+/// - 数値安定性を担保するため、最大値減算 (Max-trick) を適用して指数関数の浮動小数点オーバーフローを物理的に排除する。
+/// - ヒープ割り当てを一切行わないゼロアロケーション走査で計算する。
+///
+/// # 数理仕様
+/// $$E(x; C) = -T \cdot \ln \sum_{i=1}^K \exp\left( \frac{z_i}{T} \right) = -z_{\max} - T_{\text{eff}} \cdot \ln \sum_{i=1}^K \exp\left( \frac{z_i - z_{\max}}{T_{\text{eff}}} \right)$$
+/// ここで、有効温度 $T_{\text{eff}} = \max(T, 10^{-4})$、最大ロジット $z_{\max} = \max_{1 \le i \le K} z_i$ である。
+///
+/// # 引数
+/// - `logits`: 未正規化の生ロジットスライス (`f64`)。
+/// - `temperature`: 較正温度パラメータ $T$。正の有限実数。
+///
+/// # 戻り値
+/// - 成功時は自由エネルギー値 $E(x; C)$、入力不正時は `CoreError::MathError` を返却する。
+pub fn free_energy(logits: &[f64], temperature: f64) -> Result<f64> {
+    if logits.is_empty() {
+        return Err(CoreError::MathError {
+            message: "ロジット配列が空です。".to_string(),
+        });
+    }
+
+    if !temperature.is_finite() || temperature <= 0.0 {
+        return Err(CoreError::MathError {
+            message: format!("温度パラメータは正の有限実数である必要があります: {temperature}。"),
+        });
+    }
+
+    // 単一候補 (K=1) の場合は、-z_0 を直接返却する。
+    if logits.len() == 1 {
+        if !logits[0].is_finite() {
+            return Err(CoreError::MathError {
+                message: "ロジットに非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
+        return Ok(-logits[0]);
+    }
+
+    let effective_tau = temperature.max(1e-4);
+
+    // Pass 1: 最大値探索および非有限値の検出。
+    let mut max_logit = f64::NEG_INFINITY;
+    for &logit in logits {
+        if !logit.is_finite() {
+            return Err(CoreError::MathError {
+                message: "ロジットに非有限値(NaNまたは無限大)が含まれています。".to_string(),
+            });
+        }
+        if logit > max_logit {
+            max_logit = logit;
+        }
+    }
+
+    // Pass 2: 最大値減算後の指数和累積 (Max-trick)。
+    // (logit - max_logit) <= 0.0 であるためオーバーフローしない。
+    // かつ最大要素は exp(0.0) = 1.0 であるため、sum_exp >= 1.0 が保証され ln(sum_exp) >= 0.0 となる。
+    let mut sum_exp = 0.0;
+    for &logit in logits {
+        let scaled = (logit - max_logit) / effective_tau;
+        sum_exp += scaled.exp();
+    }
+
+    let energy = -max_logit - effective_tau * sum_exp.ln();
+    Ok(energy)
+}
+
+/// 候補数 $K$ に対する基底エネルギー偏向を補正した、正規化ヘルムホルツ自由エネルギー (Normalized Free Energy) を算出する。
+///
+/// # 概要
+/// - 単純な自由エネルギー $E(x; C) = -T \ln \sum \exp(z_i/T)$ は、候補数 $K$ が増加するだけで理論的に自然低下 (約 $-T \ln K$) する。
+/// - local-jev では候補数 $K \in [1, 255]$ が動的に変動するため、候補数で補正した正規化自由エネルギーを採用することで、
+///   任意の候補数に対して単一の閾値 $\tau_{\text{energy}}$ で安定した境界判定を可能にする。
+/// - すべてのロジットが同一の定数 $c$ (完全な一様分布) であるとき、本関数の出力は厳密に $-c$ (ロジットが0のときは0.0) となる。
+///
+/// # 数理仕様
+/// $$E_{\text{norm}}(x; C) = E(x; C) + T \ln K = -T \cdot \ln\left( \frac{1}{K} \sum_{i=1}^K \exp\left(\frac{z_i}{T}\right) \right) = -z_{\max} - T_{\text{eff}} \cdot \ln\left( \frac{1}{K} \sum_{i=1}^K \exp\left(\frac{z_i - z_{\max}}{T_{\text{eff}}}\right) \right)$$
+///
+/// # 引数
+/// - `logits`: 未正規化の生ロジットスライス (`f64`)。
+/// - `temperature`: 較正温度パラメータ $T$。正の有限実数。
+///
+/// # 戻り値
+/// - 成功時は正規化自由エネルギー値 $E_{\text{norm}}(x; C)$、入力不正時は `CoreError::MathError` を返却する。
+pub fn normalized_free_energy(logits: &[f64], temperature: f64) -> Result<f64> {
+    let k = logits.len();
+    let raw_energy = free_energy(logits, temperature)?;
+    if k <= 1 {
+        return Ok(raw_energy);
+    }
+
+    let effective_tau = temperature.max(1e-4);
+    let shift = effective_tau * (k as f64).ln();
+    Ok(raw_energy + shift)
 }
 
 #[cfg(test)]
@@ -1082,5 +1179,88 @@ mod tests {
         // 3. 異常系
         assert!(score_variance_ratio(&[]).is_err());
         assert!(score_variance_ratio(&[1.0]).is_err());
+    }
+
+    #[test]
+    fn test_free_energy_basic() {
+        let logits = vec![2.0, 1.0, 0.0];
+        let t = 1.0;
+        let fe = free_energy(&logits, t).unwrap();
+        // 理論値: -ln(exp(2) + exp(1) + exp(0)) = -ln(7.389056 + 2.718282 + 1.0) = -ln(11.107338) ≈ -2.4076
+        let expected = -((2.0f64).exp() + (1.0f64).exp() + (0.0f64).exp()).ln();
+        assert!((fe - expected).abs() < 1e-9);
+
+        // K=1 の場合は -z_0
+        let fe_single = free_energy(&[3.5], 1.0).unwrap();
+        assert!((fe_single - (-3.5)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_normalized_free_energy_uniform() {
+        // 全ロジットが同一 c の場合、E_norm は厳密に -c に一致する。
+        for &k in &[2, 3, 5, 10, 50] {
+            let logits_zero = vec![0.0; k];
+            let nfe_zero = normalized_free_energy(&logits_zero, 1.0).unwrap();
+            assert!(
+                nfe_zero.abs() < 1e-9,
+                "k={k} でロジットが 0 のとき E_norm は 0.0 であるべき"
+            );
+
+            let c = 2.5;
+            let logits_const = vec![c; k];
+            let nfe_const = normalized_free_energy(&logits_const, 1.2).unwrap();
+            assert!(
+                (nfe_const - (-c)).abs() < 1e-9,
+                "k={k} でロジットが c のとき E_norm は -c であるべき"
+            );
+        }
+    }
+
+    #[test]
+    fn test_free_energy_extreme_logits() {
+        // 大きなロジットでも Max-trick によりオーバーフローせずに計算可能。
+        let logits = vec![1000.0, 999.0, 998.0];
+        let fe = free_energy(&logits, 1.0).unwrap();
+        assert!(fe.is_finite());
+        // E = -1000 - ln(1 + exp(-1) + exp(-2)) ≈ -1000 - 0.4076 = -1000.4076
+        assert!(fe < -999.0);
+
+        let nfe = normalized_free_energy(&logits, 1.0).unwrap();
+        assert!(nfe.is_finite());
+        // nfe = fe + ln(3) ≈ -1000.4076 + 1.0986 = -999.309
+        assert!(nfe < -998.0);
+    }
+
+    #[test]
+    fn test_free_energy_ood_vs_id() {
+        let t = 1.0;
+        // In-Distribution: 1つの候補が強く発火 (低エネルギー = 負の大きな値)
+        let id_logits = vec![5.0, 0.2, -0.5];
+        let id_energy = normalized_free_energy(&id_logits, t).unwrap();
+        assert!(id_energy < -3.5);
+
+        // Out-of-Distribution: 全ての候補が低く沈んでいる (高エネルギー = 正または0近傍の大きな値)
+        let ood_logits = vec![-4.0, -4.5, -5.0];
+        let ood_energy = normalized_free_energy(&ood_logits, t).unwrap();
+        assert!(ood_energy > 3.0);
+
+        // OOD のエネルギーは ID より遥かに高い
+        assert!(ood_energy > id_energy + 6.0);
+    }
+
+    #[test]
+    fn test_free_energy_errors_and_edge_cases() {
+        // 空配列
+        assert!(free_energy(&[], 1.0).is_err());
+        assert!(normalized_free_energy(&[], 1.0).is_err());
+
+        // 温度が 0 以下または非有限
+        assert!(free_energy(&[1.0, 2.0], 0.0).is_err());
+        assert!(free_energy(&[1.0, 2.0], -1.0).is_err());
+        assert!(free_energy(&[1.0, 2.0], f64::NAN).is_err());
+
+        // ロジットに非有限値
+        assert!(free_energy(&[1.0, f64::NAN], 1.0).is_err());
+        assert!(free_energy(&[1.0, f64::INFINITY], 1.0).is_err());
     }
 }

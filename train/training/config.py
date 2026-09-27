@@ -58,6 +58,7 @@ class SFTConfig:
     model_name_or_path: str = DEFAULT_BACKBONE_MODEL_ID
     mlp_hidden_size: int | None = None
     max_sequence_length: int = MAX_SEQUENCE_LENGTH
+    gradient_checkpointing: bool = False
 
     dataset_names: list[str] = field(
         default_factory=lambda: [

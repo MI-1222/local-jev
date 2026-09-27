@@ -247,6 +247,8 @@ fn test_gating_metadata_schema_and_serialization_parity() {
     assert!(properties.get("confidence").is_some());
     assert!(properties.get("entropy").is_some());
     assert!(properties.get("margin").is_some());
+    assert!(properties.get("energy").is_some());
+    assert!(properties.get("is_ood").is_some());
     assert!(properties.get("reason").is_some());
     assert!(properties.get("escalation").is_some());
 
@@ -259,6 +261,8 @@ fn test_gating_metadata_schema_and_serialization_parity() {
         confidence: 0.65,
         entropy: Some(0.25),
         margin: Some(0.10),
+        energy: Some(-1.8),
+        is_ood: false,
         reason: "テスト降格理由".to_string(),
         escalation: Some(EscalationContext {
             top_candidates: vec![
@@ -282,6 +286,8 @@ fn test_gating_metadata_schema_and_serialization_parity() {
     assert_eq!(json_val["confidence"], 0.65);
     assert_eq!(json_val["entropy"], 0.25);
     assert_eq!(json_val["margin"], 0.10);
+    assert_eq!(json_val["energy"], -1.8);
+    assert_eq!(json_val["is_ood"], false);
     assert_eq!(json_val["reason"], "テスト降格理由");
 
     let esc_val = &json_val["escalation"];

@@ -535,6 +535,10 @@ class SFTTrainer:
                 is_negatives=batch["is_negatives"],
             )
 
+            # MPS アロケータのキャッシュ累積によるメモリ枯渇を防止
+            if step % 20 == 0 and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+
             if progress_callback is not None and (
                 step % 10 == 0 or step == total_batches - 1
             ):
@@ -616,6 +620,9 @@ class SFTTrainer:
         if self.config.evaluate_position_bias and self.val_samples:
             bias_metrics = self.evaluate_position_bias(model=model)
             metrics.update(bias_metrics)
+
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
         return metrics
 
@@ -828,6 +835,16 @@ class SFTTrainer:
             num_warmup_steps=num_warmup_steps,
             num_training_steps=max_train_steps,
         )
+        # 勾配チェックポインティングの適用 (VRAM/メモリ削減)
+        if getattr(self.config, "gradient_checkpointing", False):
+            raw_backbone = getattr(self.model, "backbone", None)
+            if raw_backbone is not None and hasattr(
+                raw_backbone, "gradient_checkpointing_enable"
+            ):
+                raw_backbone.gradient_checkpointing_enable()
+                logger.info(
+                    "勾配チェックポインティング (Gradient Checkpointing) を有効化しました。"
+                )
 
         # 4. Accelerate によるラップ
         (
