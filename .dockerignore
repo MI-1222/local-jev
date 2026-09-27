@@ -16,4 +16,6 @@ train/
 # ドキュメント・メモ・配布物
 *.md
 docs/
-dist/
+dist/*.tar.gz
+dist/*.sha256
+dist/local-jev-*/
