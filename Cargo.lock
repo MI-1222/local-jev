@@ -1135,7 +1135,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "local-jev-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aquamarine",
  "clap",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "local-jev-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aquamarine",
  "indexmap",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "local-jev-runtime"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aquamarine",
  "indexmap",
@@ -1182,7 +1182,7 @@ dependencies = [
 
 [[package]]
 name = "local-jev-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aquamarine",
  "axum",
