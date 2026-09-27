@@ -75,6 +75,25 @@ pub struct GatingThresholds {
     /// OOD 判定用の正規化自由エネルギー閾値 (デフォルト: -1.0)。
     #[serde(default = "default_energy_threshold")]
     pub energy_threshold: f64,
+
+    /// OOD 自由エネルギー算出専用の温度パラメータ。
+    ///
+    /// Softmax 確率較正温度とは独立に、低発火・高コントラストな自由エネルギーを算出するために使用する。
+    /// 未指定時は各バケットの Softmax 温度にフォールバックする。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub energy_temperature: Option<f64>,
+
+    /// ハイブリッド OOD 判定用の緩和正規化自由エネルギー閾値 (任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loose_energy_threshold: Option<f64>,
+
+    /// ハイブリッド OOD 判定用の最小確信度閾値 (任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ood_min_confidence: Option<f64>,
+
+    /// ハイブリッド OOD 判定用の最小マージン閾値 (任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ood_min_margin: Option<f64>,
 }
 
 fn default_true() -> bool {
@@ -105,6 +124,10 @@ impl Default for GatingThresholds {
             top_margin_threshold: DEFAULT_TOP_MARGIN_THRESHOLD,
             ood_enabled: true,
             energy_threshold: DEFAULT_ENERGY_THRESHOLD,
+            energy_temperature: None,
+            loose_energy_threshold: None,
+            ood_min_confidence: None,
+            ood_min_margin: None,
         }
     }
 }
@@ -125,6 +148,10 @@ impl GatingThresholds {
             top_margin_threshold: self.top_margin_threshold,
             ood_enabled: self.ood_enabled,
             energy_threshold: self.energy_threshold,
+            energy_temperature: self.energy_temperature,
+            loose_energy_threshold: self.loose_energy_threshold,
+            ood_min_confidence: self.ood_min_confidence,
+            ood_min_margin: self.ood_min_margin,
         }
     }
 }

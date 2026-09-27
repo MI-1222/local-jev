@@ -377,7 +377,9 @@ fn analyze_model_energy_distribution(
         low_threshold: 0.35,
         top_margin_threshold: 0.15,
         ood_enabled: true,
+        energy_temperature: None,
         energy_threshold: 100.0,
+        ..GatingConfig::default()
     };
 
     println!("\n================================================================================");
@@ -582,7 +584,7 @@ fn test_ood_safety_valve_benchmark() {
         );
     }
 
-    // 2. Tier 2 (310M-INT8) の評価 (エネルギー特性の計測と監査)
+    // 2. Tier 2 (310M-INT8) の評価 (最適化されたエネルギー温度とハイブリッドOOD安全弁の検証)
     let tier2_dir = root.join("models").join("modernbert-310m-int8");
     if let Some((engine2, tok2, calib2)) = init_engine(&tier2_dir) {
         let (id2, ood2) =
@@ -600,8 +602,84 @@ fn test_ood_safety_valve_benchmark() {
         }
         let auroc2 = pairs_correct / (id2.len() * ood2.len()) as f64;
         println!(
-            "Tier 2 (310M-INT8) AUROC: {:.4} (ロジット圧縮のため、エネルギー単体での分離は低め)。",
+            "Tier 2 (310M-INT8) AUROC: {:.4} (目標 0.80 以上)。",
             auroc2
+        );
+        assert!(
+            auroc2 >= 0.80,
+            "Tier 2 AUROC が 0.80 以上であること。実際: {:.4}。",
+            auroc2
+        );
+
+        // calibration.json の設定に基づく GatingConfig での実推論 OOD 検知率検証
+        let (id_samples, ood_samples) = build_evaluation_datasets();
+        let coarse_config = CoarseToFineConfig::default();
+        let gating_config2 = calib2.gating_config();
+
+        let mut ood_detected = 0;
+        for sample in &ood_samples {
+            let mut criteria_map = IndexMap::new();
+            for (k, v) in &sample.criteria {
+                criteria_map.insert(k.to_string(), v.to_string());
+            }
+            let question = Question::new_choice(sample.instructions, criteria_map);
+            let answer = engine2
+                .evaluate_question_coarse_to_fine_with_gating(
+                    &tok2,
+                    sample.state,
+                    &question,
+                    &calib2,
+                    &coarse_config,
+                    Some(&gating_config2),
+                )
+                .expect("推論に成功した。");
+
+            let gating = answer.gating.expect("gating メタデータが存在する。");
+            if gating.is_ood {
+                ood_detected += 1;
+            }
+        }
+
+        let tpr2 = (ood_detected as f64 / ood_samples.len() as f64) * 100.0;
+        println!(
+            "Tier 2 (310M-INT8) ハイブリッド OOD 検知率: {:.1}% ({}/{}) (目標 90.0% 以上)。",
+            tpr2, ood_detected, ood_samples.len()
+        );
+
+        // ID サンプルの誤棄却率 (FPR) も計測
+        let mut id_rejected = 0;
+        for sample in &id_samples {
+            let mut criteria_map = IndexMap::new();
+            for (k, v) in &sample.criteria {
+                criteria_map.insert(k.to_string(), v.to_string());
+            }
+            let question = Question::new_choice(sample.instructions, criteria_map);
+            let answer = engine2
+                .evaluate_question_coarse_to_fine_with_gating(
+                    &tok2,
+                    sample.state,
+                    &question,
+                    &calib2,
+                    &coarse_config,
+                    Some(&gating_config2),
+                )
+                .expect("推論に成功した。");
+
+            let gating = answer.gating.expect("gating メタデータが存在する。");
+            if gating.is_ood {
+                id_rejected += 1;
+            }
+        }
+        let fpr2 = (id_rejected as f64 / id_samples.len() as f64) * 100.0;
+        println!(
+            "Tier 2 (310M-INT8) ID 誤棄却率 (FPR): {:.1}% ({}/{})。",
+            fpr2, id_rejected, id_samples.len()
+        );
+
+        assert!(
+            tpr2 >= 90.0,
+            "Tier 2 OOD 検知率が 90.0% 以上であること。実際: {:.1}%。",
+            tpr2
         );
     }
 }

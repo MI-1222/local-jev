@@ -104,6 +104,7 @@ async fn test_gating_auto_execute_routing() {
         top_margin_threshold: 0.0,
         ood_enabled: false,
         energy_threshold: 100.0,
+        ..GatingConfig::default()
     };
 
     let req_payload = SystemOneRequest::new(
@@ -177,6 +178,7 @@ async fn test_gating_confirm_or_escalate_with_system2_context() {
         top_margin_threshold: 0.90,
         ood_enabled: false,
         energy_threshold: 100.0,
+        ..GatingConfig::default()
     };
 
     let mut req_payload = SystemOneRequest::new(

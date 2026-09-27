@@ -102,6 +102,7 @@ fn test_single_question_gating() {
         top_margin_threshold: 0.0,
         ood_enabled: false,
         energy_threshold: 100.0,
+        ..GatingConfig::default()
     };
     let answer_auto = engine
         .evaluate_question_coarse_to_fine_with_gating(
@@ -168,6 +169,7 @@ fn test_batch_and_chunked_gating() {
         top_margin_threshold: 0.9999,
         ood_enabled: false,
         energy_threshold: 100.0,
+        ..GatingConfig::default()
     };
 
     // 通常バッチ推論でのゲーティング
@@ -262,6 +264,7 @@ fn test_coarse_to_fine_gating_and_reconstruction() {
         top_margin_threshold: 0.15,
         ood_enabled: true,
         energy_threshold: -1.0,
+        ..GatingConfig::default()
     };
 
     let answers = engine
@@ -331,6 +334,7 @@ fn test_runtime_energy_ood_circuit_breaker() {
         top_margin_threshold: 0.0,
         ood_enabled: true,
         energy_threshold: -50.0, // 極めて厳しいエネルギー閾値 -> 強制 OOD
+        ..GatingConfig::default()
     };
 
     let answer_ood = engine
@@ -380,6 +384,7 @@ fn test_runtime_energy_ood_circuit_breaker() {
         top_margin_threshold: 0.0,
         ood_enabled: false,
         energy_threshold: -50.0,
+        ..GatingConfig::default()
     };
 
     let answer_disabled = engine

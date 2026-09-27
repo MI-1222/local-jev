@@ -42,6 +42,9 @@ DEFAULT_LOW_CONFIDENCE_THRESHOLD: float = 0.35
 DEFAULT_TOP_MARGIN_THRESHOLD: float = 0.15
 """上位2候補の最小確率マージン閾値。"""
 
+DEFAULT_ENERGY_THRESHOLD: float = -1.0
+"""OOD 判定用のデフォルト正規化自由エネルギー閾値。"""
+
 
 def compute_normalized_entropy(probabilities: list[float] | tuple[float, ...]) -> float:
     """確率分布から候補数 K に非依存な正規化シャノンエントロピー H_norm を算出する。
@@ -166,11 +169,23 @@ class GatingThresholds:
         high_threshold (float): 高確信度下限閾値 (自動実行境界)。
         low_threshold (float): 中確信度下限閾値 (確認要求境界)。
         top_margin_threshold (float): 上位2候補確率マージン閾値。
+        ood_enabled (bool): OOD 安全弁を有効化するかどうか。
+        energy_threshold (float): OOD 判定用の正規化自由エネルギー閾値。
+        energy_temperature (float | None): OOD 自由エネルギー算出専用の温度パラメータ。
+        loose_energy_threshold (float | None): ハイブリッド OOD 判定用の緩和正規化自由エネルギー閾値。
+        ood_min_confidence (float | None): ハイブリッド OOD 判定用の最小確信度閾値。
+        ood_min_margin (float | None): ハイブリッド OOD 判定用の最小マージン閾値。
     """
 
     high_threshold: float = DEFAULT_HIGH_CONFIDENCE_THRESHOLD
     low_threshold: float = DEFAULT_LOW_CONFIDENCE_THRESHOLD
     top_margin_threshold: float = DEFAULT_TOP_MARGIN_THRESHOLD
+    ood_enabled: bool = True
+    energy_threshold: float = DEFAULT_ENERGY_THRESHOLD
+    energy_temperature: float | None = None
+    loose_energy_threshold: float | None = None
+    ood_min_confidence: float | None = None
+    ood_min_margin: float | None = None
 
 
 @dataclass

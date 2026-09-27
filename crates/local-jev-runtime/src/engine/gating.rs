@@ -39,14 +39,14 @@ use local_jev_core::schema::QuestionType;
 
 /// Choice 型の質問とロジット配列から、正規化ヘルムホルツ自由エネルギーを算出する。
 ///
-/// 候補数 $K$ とモデルのキャリブレーション温度 $T = \text{calib\_config.get\_temperature(QuestionType::Choice, K)}$ を用い、
+/// モデル較正設定の `energy_temperature` (または候補数バケット温度 $T = \text{calib\_config.get\_temperature(QuestionType::Choice, K)}$) を用い、
 /// $E_{\text{norm}}(x) = -T \ln \sum_{i=1}^K \exp(z_i / T) + T \ln K$ を算出する。
 /// Choice 型以外 (Score 型、Noul 型) またはロジットが空の場合は `None` を返す。
 ///
 /// # 引数
 /// - `question`: 質問定義。
 /// - `logits`: 決定ロジットスライス。
-/// - `calib_config`: キャリブレーション設定 (候補数バケット温度)。
+/// - `calib_config`: キャリブレーション設定。
 ///
 /// # 戻り値
 /// 正規化ヘルムホルツ自由エネルギー値 (任意)。
@@ -55,11 +55,38 @@ pub fn calculate_choice_energy(
     logits: &[f64],
     calib_config: &CalibrationConfig,
 ) -> Option<f64> {
+    calculate_choice_energy_with_config(question, logits, calib_config, None)
+}
+
+/// Choice 型の質問とロジット配列、およびリクエスト固有のゲーティング設定から、正規化ヘルムホルツ自由エネルギーを算出する。
+///
+/// # 温度解決の優先順位
+/// 1. `gating_config.energy_temperature`: リクエストで明示されたエネルギー温度。
+/// 2. `calib_config.gating_thresholds.energy_temperature`: モデル成果物で事前較正されたエネルギー専用温度。
+/// 3. `calib_config.get_temperature(QuestionType::Choice, K)`: 候補数バケットに基づく Softmax 較正温度。
+///
+/// # 引数
+/// - `question`: 質問定義。
+/// - `logits`: 決定ロジットスライス。
+/// - `calib_config`: キャリブレーション設定。
+/// - `gating_config`: リクエスト固有のゲーティング設定 (任意)。
+///
+/// # 戻り値
+/// 正規化ヘルムホルツ自由エネルギー値 (任意)。
+pub fn calculate_choice_energy_with_config(
+    question: &Question,
+    logits: &[f64],
+    calib_config: &CalibrationConfig,
+    gating_config: Option<&GatingConfig>,
+) -> Option<f64> {
     if question.question_type != QuestionType::Choice || logits.is_empty() {
         return None;
     }
     let k = logits.len();
-    let temp = calib_config.get_temperature(QuestionType::Choice, k);
+    let temp = gating_config
+        .and_then(|cfg| cfg.energy_temperature)
+        .or(calib_config.gating_thresholds.energy_temperature)
+        .unwrap_or_else(|| calib_config.get_temperature(QuestionType::Choice, k));
     normalized_free_energy(logits, temp).ok()
 }
 
@@ -129,7 +156,9 @@ pub fn apply_gating_to_answer_with_logits(
     calib_config: &CalibrationConfig,
 ) {
     let energy = match (question, logits) {
-        (Some(q), Some(lg)) => calculate_choice_energy(q, lg, calib_config),
+        (Some(q), Some(lg)) => {
+            calculate_choice_energy_with_config(q, lg, calib_config, gating_config)
+        }
         _ => None,
     };
     apply_gating_to_answer_with_energy(
@@ -282,6 +311,7 @@ mod tests {
             top_margin_threshold: 0.20,
             ood_enabled: true,
             energy_threshold: -1.0,
+            ..GatingConfig::default()
         };
         let resolved_explicit = resolve_gating_config(Some(&explicit), &calib);
         assert!(!resolved_explicit.enabled);
