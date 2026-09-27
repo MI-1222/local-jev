@@ -6,7 +6,7 @@
 # Buildx で瞬時に linux/amd64 および linux/arm64 の Multi-Arch イメージを生成する。
 # ==============================================================================
 
-FROM debian:bookworm-slim AS runtime
+FROM ubuntu:24.04 AS runtime
 
 ARG TARGETARCH
 
