@@ -62,8 +62,8 @@ pipeline_tag: text-classification
 """
 
 
-def upload_tier(tier: str, tag: str | None = None) -> None:
-    """指定 Tier のモデル成果物を Hugging Face Hub にアップロードする."""
+def upload_tier(tier: str, tag: str | None = None, tag_only: bool = False) -> None:
+    """指定 Tier のモデル成果物を Hugging Face Hub にアップロードまたはタグ付けする."""
     token = os.environ.get("HF_TOKEN")
     api = HfApi(token=token)
 
@@ -71,11 +71,23 @@ def upload_tier(tier: str, tag: str | None = None) -> None:
     repo_id = conf["repo_id"]
     local_dir = conf["local_dir"]
 
-    if not local_dir.exists():
-        raise FileNotFoundError(f"モデルディレクトリが見つかりません: {local_dir}")
-
     print(f"[*] リポジトリを確認/作成中: {repo_id}")
     create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, token=token)
+
+    if tag_only:
+        if tag:
+            print(f"[*] リリースタグ {tag} を作成中 (tag-only モード)...")
+            api.create_tag(repo_id=repo_id, tag=tag, repo_type="model")
+            print(f"[✓] タグ作成完了: https://huggingface.co/{repo_id}/tree/{tag}")
+        return
+
+    if not local_dir.exists():
+        print(f"[WARN] モデルディレクトリが見つかりません: {local_dir}")
+        if tag:
+            print(f"[*] ディレクトリ不在のため、リリースタグ {tag} の作成のみ実行します...")
+            api.create_tag(repo_id=repo_id, tag=tag, repo_type="model")
+            print(f"[✓] タグ作成完了: https://huggingface.co/{repo_id}/tree/{tag}")
+        return
 
     # README.md (モデルカード) の自動配置
     readme_path = local_dir / "README.md"
@@ -106,11 +118,16 @@ def main() -> None:
     parser.add_argument(
         "--tag", type=str, help="Release tag (例: v0.3.4)", default=None
     )
+    parser.add_argument(
+        "--tag-only",
+        action="store_true",
+        help="成果物アップロードを行わず、リリースタグのみを作成する",
+    )
     args = parser.parse_args()
 
     tiers = ["tier1", "tier2"] if args.tier == "all" else [args.tier]
     for t in tiers:
-        upload_tier(t, tag=args.tag)
+        upload_tier(t, tag=args.tag, tag_only=args.tag_only)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@
 # 1. クロスプラットフォーム・ネイティブバイナリのビルド (Linux x86_64/arm64, macOS Apple Silicon)
 # 2. ONNX Runtime (libonnxruntime) 共有ライブラリの自動バンドル & rpath 設定
 # 3. Docker Buildx による Multi-Arch コンテナイメージ (linux/amd64, linux/arm64) の GHCR プッシュ
-# 4. GitHub Releases へのスタンドアロンアーカイブ・Compose テンプレート・SHA256SUMS 公開
+# 4. GitHub Releases へのスタンドアロンアーカイブ・Compose・モデル取得スクリプト・SHA256SUMS 公開
 # を全自動で実行する。
 # ==============================================================================
 
@@ -143,18 +143,41 @@ jobs:
             fi
           fi
 
-          # 3. 補助ファイル (Compose, ドキュメント) の配置
+          # 3. 補助ファイル (Compose, モデル取得スクリプト, ドキュメント) の配置
           cp docker-compose.yml "${DIST_DIR}/"
+          cp scripts/download_models.sh "${DIST_DIR}/"
+          chmod +x "${DIST_DIR}/download_models.sh"
           cat << 'EOF' > "${DIST_DIR}/README.md"
           # Sokuto スタンドアロンバイナリパッケージ
-          
+
           本パッケージには `bin/sokuto` 実行バイナリと、必要な `lib/` 共有ライブラリが同梱されています。
           rpath が設定されているため、アーカイブを展開して即座に実行可能です。
-          
-          ## 実行例
+
+          ## 1. モデル成果物の取得 (Hugging Face Hub)
+
+          推論を行うには、最適化済みモデル（ONNX / トークナイザー / 較正設定）が必要です。
+          同梱の `download_models.sh` を用いて Hugging Face Hub より取得してください。
+
           ```bash
+          # 推奨: Tier 2 (310M-INT8) モデルの取得 (保存先: ./models/modernbert-310m-int8)
+          ./download_models.sh tier2
+
+          # (任意) Tier 1 (130M-INT8) モデルの取得 (保存先: ./models/quantized)
+          ./download_models.sh tier1
+          ```
+
+          公式 Hugging Face リポジトリ:
+          - Tier 2 (標準高精度): https://huggingface.co/MI-1222/sokuto-ja-310m-int8
+          - Tier 1 (低遅延):   https://huggingface.co/MI-1222/sokuto-ja-130m-int8
+
+          ## 2. 実行例
+
+          ```bash
+          # ヘルプ確認
           ./bin/sokuto --help
-          ./bin/sokuto serve --model-dir ./models/default
+
+          # サーバー起動 (Tier 2 モデルを指定)
+          ./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
           ```
           EOF
 
@@ -264,6 +287,15 @@ jobs:
       - name: ソースコードのチェックアウト
         uses: actions/checkout@v4
 
+      - name: バージョン名の決定
+        id: vars
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [ -z "${VERSION}" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag_name }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: 全バイナリアーティファクトのダウンロード
         uses: actions/download-artifact@v4
         with:
@@ -271,19 +303,50 @@ jobs:
           pattern: binary-*
           merge-multiple: true
 
+      - name: モデル取得スクリプトの追加
+        run: |
+          cp scripts/download_models.sh release-artifacts/
+          chmod +x release-artifacts/download_models.sh
+
       - name: 統合 SHA256SUMS の生成
         run: |
           cd release-artifacts
-          shasum -a 256 sokuto-*.tar.gz > SHA256SUMS
+          shasum -a 256 sokuto-*.tar.gz download_models.sh > SHA256SUMS
           cat SHA256SUMS
+
+      - name: リリースノート本文の生成
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          cat << EOF > release-body.md
+          ## sokuto ${VERSION}
+
+          日本語特化・TypeSafe AI「Jev (System One)」のローカル／オンプレミス推論基盤 \`sokuto\` の成果物リリースです。
+
+          ### 📦 配布バイナリ & コンテナ
+          - **スタンドアロンバイナリ**: 下記 Assets より対象 OS/Arch の \`sokuto-${VERSION}-*.tar.gz\` をダウンロードしてください (ONNX Runtime 共有ライブラリ同梱)。
+          - **Multi-Arch Docker イメージ**: \`docker pull ghcr.io/${{ github.repository }}:${VERSION}\` (または \`latest\`)
+
+          ### 🤗 Hugging Face Hub モデル成果物
+          推論実行に必要な最適化済み ONNX モデル・較正設定は Hugging Face Hub で管理されています:
+          - **Tier 2 (310M-INT8 / 推奨標準)**: [MI-1222/sokuto-ja-310m-int8](https://huggingface.co/MI-1222/sokuto-ja-310m-int8) (23ms, Choice 90.1%)
+          - **Tier 1 (130M-INT8 / 低遅延)**: [MI-1222/sokuto-ja-130m-int8](https://huggingface.co/MI-1222/sokuto-ja-130m-int8) (12ms, Choice 87.8%)
+
+          #### モデル取得スクリプト:
+          \`\`\`sh
+          # 添付の download_models.sh で自動取得
+          ./download_models.sh tier2
+          \`\`\`
+          EOF
 
       - name: GitHub Release への成果物添付と公開
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
+          tag_name: ${{ steps.vars.outputs.version }}
+          body_path: release-body.md
           files: |
             release-artifacts/sokuto-*.tar.gz
             release-artifacts/SHA256SUMS
+            release-artifacts/download_models.sh
             docker-compose.yml
           draft: false
           prerelease: false
