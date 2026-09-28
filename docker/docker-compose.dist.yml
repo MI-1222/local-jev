@@ -1,0 +1,42 @@
+# ==============================================================================
+# Sokuto 配布パッケージ用 Docker Compose 定義
+#
+# GitHub Packages (GHCR) 事前ビルド済み Multi-Arch イメージを使用し、
+# ローカルでの Rust ビルドや Dockerfile を不要として即座に起動する。
+# ==============================================================================
+
+services:
+  sokuto:
+    image: ghcr.io/mi-1222/sokuto:${SOKUTO_VERSION:-latest}
+    container_name: sokuto
+    restart: unless-stopped
+    ports:
+      - "${SOKUTO_PORT:-3000}:3000"
+    environment:
+      - SOKUTO_HOST=0.0.0.0
+      - SOKUTO_PORT=3000
+      - SOKUTO_MODEL_DIR=/models/default
+      - SOKUTO_POOL_SIZE=2
+      - SOKUTO_INTRA_THREADS=4
+      - SOKUTO_INTER_THREADS=1
+      - RUST_LOG=sokuto_server=info,sokuto_cli=info,tower_http=info
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
+    volumes:
+      # download_models.sh tier2 で取得される ./models/modernbert-310m-int8 をデフォルトでマウント。
+      # Tier 1 を使用する場合は SOKUTO_MODEL_PATH=./models/quantized を指定可能。
+      - ${SOKUTO_MODEL_PATH:-./models/modernbert-310m-int8}:/models/default:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/sokuto", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 1G
+        reservations:
+          cpus: "1.0"
+          memory: 512M

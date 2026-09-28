@@ -203,16 +203,19 @@ Docker 環境を使わずに最速で起動する場合に推奨します。[Git
 VERSION="v0.3.5"
 curl -sSL -O "https://github.com/MI-1222/sokuto/releases/download/${VERSION}/sokuto-${VERSION}-aarch64-apple-darwin.tar.gz"
 tar -xzf "sokuto-${VERSION}-aarch64-apple-darwin.tar.gz"
+cd "sokuto-${VERSION}-aarch64-apple-darwin"
 
-# サーバー起動 (ポート 3000)
-./sokuto-${VERSION}-aarch64-apple-darwin/bin/sokuto serve \
-  --model-dir ./models/modernbert-310m-int8 \
-  --port 3000
+# 1. モデル取得 (Hugging Face Hub)
+./download_models.sh tier2
+
+# 2. ネイティブバイナリで起動 (Docker 不要)
+./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
+
+# (または 同梱 Compose で起動 - GHCR 事前ビルド済みイメージ利用)
+docker compose up -d
 ```
 
-#### 方法 B: Docker (事前ビルド済み GHCR イメージ または Compose)
-
-コンテナ運用を行う場合、GitHub Packages (GHCR) の事前ビルド済みイメージ、または Docker Compose を利用します。
+#### 方法 B: Docker (GHCR 事前ビルド済みイメージ または ソースからの Compose)
 
 ```bash
 # 1. GHCR 事前ビルド済みイメージによる直接起動 (ローカルでの Rust ビルド不要)
@@ -223,7 +226,7 @@ docker run -d \
   -e SOKUTO_MODEL_DIR=/models/default \
   ghcr.io/mi-1222/sokuto:v0.3.5
 
-# (または 2. リポジトリ内 Docker Compose による起動)
+# (または 2. リポジトリ開発環境での Docker Compose による起動)
 docker compose up -d sokuto-cpu
 ```
 

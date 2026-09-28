@@ -260,7 +260,10 @@ docker compose down
 \`\`\`
 EOF
 
-else
+    # 配布用 Compose テンプレートの配置 (GHCR 事前ビルド済みイメージ対応)
+    sed -e "s|\${SOKUTO_VERSION:-latest}|${VERSION}|g" \
+        "${ROOT_DIR}/docker/docker-compose.dist.yml" > "${PACKAGE_DIR}/docker-compose.yml"
+
     # ネイティブバイナリ版 deploy.sh (run.sh)
     cat << 'EOF' > "${PACKAGE_DIR}/deploy.sh"
 #!/usr/bin/env bash
@@ -285,17 +288,18 @@ EOF
 
     # ネイティブ版 README.md
     cat << EOF > "${PACKAGE_DIR}/README.md"
-# Sokuto スタンドアロンバイナリパッケージ (${TIER_UPPER})
+# Sokuto スタンドアロン配布パッケージ (${TIER_UPPER})
 
-本パッケージには \`bin/sokuto\` 実行バイナリと、推論用モデル成果物 (${TIER}) が同梱されています。
-Docker を使用せず、直接ネイティブプロセスとして実行可能です。
+本パッケージには \`bin/sokuto\` 実行バイナリ、推論用モデル成果物 (${TIER})、および GHCR 事前ビルド済みイメージで即座に起動可能な \`docker-compose.yml\` が同梱されています。
+Docker を使用せず直接ネイティブプロセスとして実行することも、Docker Compose でコンテナ起動することも可能です。
 
 ## 同梱内容
 - \`bin/sokuto\`: CLI / サーバー実行バイナリ。
 - \`lib/\`: ONNX Runtime 共有ライブラリ。
 - \`models/default/\`: 推論用モデル成果物 (${TIER}: ONNX グラフ, トークナイザー, 較正設定)。
+- \`docker-compose.yml\`: GHCR 事前ビルド済みイメージ利用の Compose 定義。
 - \`scripts/download_models.sh\`: モデル成果物ダウンロードスクリプト。
-- \`deploy.sh\`: 起動スクリプト。
+- \`deploy.sh\`: ネイティブ起動スクリプト。
 
 ## モデルの追加・更新 (Hugging Face Hub)
 
@@ -309,9 +313,11 @@ Docker を使用せず、直接ネイティブプロセスとして実行可能�
 ./scripts/download_models.sh tier1
 \`\`\`
 
-## 起動手順
+## サーバー起動手順 (2 つの方法から選択)
 
-### 1. サーバーの起動
+### 方法 A: スタンドアロンバイナリでの起動 (Docker 不要・最速)
+
+付属の \`deploy.sh\` を実行します。
 \`\`\`bash
 ./deploy.sh
 \`\`\`
@@ -321,7 +327,18 @@ Docker を使用せず、直接ネイティブプロセスとして実行可能�
 ./bin/sokuto serve --model-dir ./models/default --port 3000
 \`\`\`
 
-### 2. 動作確認
+### 方法 B: Docker Compose での起動 (事前ビルド済み GHCR イメージ)
+
+コンテナ環境で起動したい場合は、同梱の \`docker-compose.yml\` を利用できます。
+ローカルでのコンパイルは不要で、GitHub Packages (GHCR) から自動的にイメージが取得されます。
+
+\`\`\`bash
+# コンテナ起動 (同梱モデル ./models/default または取得済みモデルで起動)
+SOKUTO_MODEL_PATH=./models/default docker compose up -d
+\`\`\`
+
+## 動作確認
+
 \`\`\`bash
 curl -i http://localhost:3000/ready
 \`\`\`
