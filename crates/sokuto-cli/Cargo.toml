@@ -1,0 +1,31 @@
+[package]
+name = "sokuto-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sokuto"
+path = "src/main.rs"
+
+[dependencies]
+aquamarine = "0.6.0"
+sokuto-core = { workspace = true }
+sokuto-runtime = { workspace = true }
+sokuto-server = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+mimalloc = { workspace = true }
+
+[features]
+default = []
+coreml = ["sokuto-runtime/coreml"]
+cuda = ["sokuto-runtime/cuda"]
+tensorrt = ["sokuto-runtime/tensorrt"]
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Local-Jev オフライン配布パッケージ生成スクリプト
+# Sokuto オフライン配布パッケージ生成スクリプト
 #
 # エアギャップ環境やオンプレミス環境へ持ち込むための配布アーカイブを自動生成する。
 # Dual-Tier モデル構成 (Tier 1: 130M-INT8 / Tier 2: 310M-INT8) に対応し,
@@ -60,13 +60,13 @@ if [[ ${#POSITIONAL_ARGS[@]} -ge 4 ]]; then
     TIER="${POSITIONAL_ARGS[3]}"
 fi
 
-PACKAGE_NAME="local-jev-${VERSION}-${FLAVOR}-${TIER}"
+PACKAGE_NAME="sokuto-${VERSION}-${FLAVOR}-${TIER}"
 PACKAGE_DIR="${OUTPUT_BASE_DIR}/${PACKAGE_NAME}"
-IMAGE_TAG="local-jev:${FLAVOR}"
+IMAGE_TAG="sokuto:${FLAVOR}"
 TIER_UPPER=$(echo "${TIER}" | tr '[:lower:]' '[:upper:]')
 
 echo "=================================================================="
-echo "Local-Jev オフライン配布パッケージの生成を開始します。"
+echo "Sokuto オフライン配布パッケージの生成を開始します。"
 echo "バージョン: ${VERSION}."
 echo "フレーバー: ${FLAVOR}."
 echo "モデル Tier: ${TIER}."
@@ -129,17 +129,17 @@ else
     echo "[INFO] ネイティブバイナリを収集・配置中..."
     mkdir -p "${PACKAGE_DIR}/bin" "${PACKAGE_DIR}/lib"
     BIN_SRC=""
-    if [[ -f "${ROOT_DIR}/target/release/local-jev" ]]; then
-        BIN_SRC="${ROOT_DIR}/target/release/local-jev"
-    elif [[ -f "${ROOT_DIR}/target/debug/local-jev" ]]; then
-        BIN_SRC="${ROOT_DIR}/target/debug/local-jev"
+    if [[ -f "${ROOT_DIR}/target/release/sokuto" ]]; then
+        BIN_SRC="${ROOT_DIR}/target/release/sokuto"
+    elif [[ -f "${ROOT_DIR}/target/debug/sokuto" ]]; then
+        BIN_SRC="${ROOT_DIR}/target/debug/sokuto"
     fi
 
     if [[ -n "${BIN_SRC}" ]]; then
         cp "${BIN_SRC}" "${PACKAGE_DIR}/bin/"
-        chmod +x "${PACKAGE_DIR}/bin/local-jev"
+        chmod +x "${PACKAGE_DIR}/bin/sokuto"
     else
-        echo "[WARN] target 配下に local-jev バイナリが見つかりません。cargo build --release を実行してください。" >&2
+        echo "[WARN] target 配下に sokuto バイナリが見つかりません。cargo build --release を実行してください。" >&2
     fi
 
     # 共有ライブラリの収集
@@ -156,26 +156,26 @@ if [[ "${FLAVOR}" != "binary" ]]; then
     echo "[INFO] 配布用 Compose テンプレートを配置中..."
     cat << EOF > "${PACKAGE_DIR}/docker-compose.yml"
 services:
-  local-jev:
+  sokuto:
     image: ${IMAGE_TAG}
-    container_name: local-jev
+    container_name: sokuto
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      - LOCAL_JEV_HOST=0.0.0.0
-      - LOCAL_JEV_PORT=3000
-      - LOCAL_JEV_MODEL_DIR=/models/default
-      - LOCAL_JEV_POOL_SIZE=2
-      - LOCAL_JEV_INTRA_THREADS=2
-      - LOCAL_JEV_INTER_THREADS=1
-      - RUST_LOG=local_jev_server=info,local_jev_cli=info,tower_http=info
+      - SOKUTO_HOST=0.0.0.0
+      - SOKUTO_PORT=3000
+      - SOKUTO_MODEL_DIR=/models/default
+      - SOKUTO_POOL_SIZE=2
+      - SOKUTO_INTRA_THREADS=2
+      - SOKUTO_INTER_THREADS=1
+      - RUST_LOG=sokuto_server=info,sokuto_cli=info,tower_http=info
       - HF_HUB_OFFLINE=1
       - TRANSFORMERS_OFFLINE=1
     volumes:
       - ./models/default:/models/default:ro
     healthcheck:
-      test: ["CMD", "/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+      test: ["CMD", "/usr/local/bin/sokuto", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -192,7 +192,7 @@ EOF
     cat << 'EOF' > "${PACKAGE_DIR}/deploy.sh"
 #!/usr/bin/env bash
 # ==============================================================================
-# Local-Jev オフラインコンテナデプロイスクリプト
+# Sokuto オフラインコンテナデプロイスクリプト
 # ==============================================================================
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -209,17 +209,17 @@ docker load -i "${IMAGE_FILE}"
 echo ">>> サービスを起動中..."
 docker compose -f "${DIR}/docker-compose.yml" up -d
 
-echo "[SUCCESS] Local-Jev サービスが正常に起動しました。"
+echo "[SUCCESS] Sokuto サービスが正常に起動しました。"
 echo "確認用エンドポイント: http://localhost:3000/ready"
 EOF
     chmod +x "${PACKAGE_DIR}/deploy.sh"
 
     # コンテナ版 README.md
     cat << EOF > "${PACKAGE_DIR}/README.md"
-# Local-Jev オフライン配布パッケージ利用手順書 (${TIER_UPPER})
+# Sokuto オフライン配布パッケージ利用手順書 (${TIER_UPPER})
 
 本パッケージは、外部インターネットから遮断されたエアギャップ環境やオンプレミス環境において、
-Local-Jev 推論サーバー (${TIER}) を即座に稼働させるための自己完結型配布パッケージです。
+Sokuto 推論サーバー (${TIER}) を即座に稼働させるための自己完結型配布パッケージです。
 
 ## 同梱内容
 - \`*-image.tar.gz\`: Docker コンテナイメージアーカイブ。
@@ -237,7 +237,7 @@ Local-Jev 推論サーバー (${TIER}) を即座に稼働させるための自�
 
 手動で起動する場合は以下の通りです。
 \`\`\`bash
-docker load -i local-jev-*-image.tar.gz
+docker load -i sokuto-*-image.tar.gz
 docker compose up -d
 \`\`\`
 
@@ -258,7 +258,7 @@ else
     cat << 'EOF' > "${PACKAGE_DIR}/deploy.sh"
 #!/usr/bin/env bash
 # ==============================================================================
-# Local-Jev ネイティブサーバー起動スクリプト
+# Sokuto ネイティブサーバー起動スクリプト
 # ==============================================================================
 set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -268,8 +268,8 @@ export DYLD_LIBRARY_PATH="${DIR}/lib:${DYLD_LIBRARY_PATH:-}"
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-echo ">>> Local-Jev ネイティブサーバーを起動します (ポート 3000)..."
-exec "${DIR}/bin/local-jev" serve \
+echo ">>> Sokuto ネイティブサーバーを起動します (ポート 3000)..."
+exec "${DIR}/bin/sokuto" serve \
     --host 0.0.0.0 \
     --port 3000 \
     --model-dir "${DIR}/models/default"
@@ -278,13 +278,13 @@ EOF
 
     # ネイティブ版 README.md
     cat << EOF > "${PACKAGE_DIR}/README.md"
-# Local-Jev スタンドアロンバイナリパッケージ (${TIER_UPPER})
+# Sokuto スタンドアロンバイナリパッケージ (${TIER_UPPER})
 
-本パッケージには \`bin/local-jev\` 実行バイナリと、推論用モデル成果物 (${TIER}) が同梱されています。
+本パッケージには \`bin/sokuto\` 実行バイナリと、推論用モデル成果物 (${TIER}) が同梱されています。
 Docker を使用せず、直接ネイティブプロセスとして実行可能です。
 
 ## 同梱内容
-- \`bin/local-jev\`: CLI / サーバー実行バイナリ。
+- \`bin/sokuto\`: CLI / サーバー実行バイナリ。
 - \`lib/\`: ONNX Runtime 共有ライブラリ。
 - \`models/default/\`: 推論用モデル成果物 (${TIER}: ONNX グラフ, トークナイザー, 較正設定)。
 - \`deploy.sh\`: 起動スクリプト。
@@ -298,7 +298,7 @@ Docker を使用せず、直接ネイティブプロセスとして実行可能�
 
 または直接バイナリを実行:
 \`\`\`bash
-./bin/local-jev serve --model-dir ./models/default --port 3000
+./bin/sokuto serve --model-dir ./models/default --port 3000
 \`\`\`
 
 ### 2. 動作確認

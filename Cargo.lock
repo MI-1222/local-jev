@@ -1134,80 +1134,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
-name = "local-jev-cli"
-version = "0.3.4"
-dependencies = [
- "aquamarine",
- "clap",
- "indexmap",
- "local-jev-core",
- "local-jev-runtime",
- "local-jev-server",
- "mimalloc",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "local-jev-core"
-version = "0.3.4"
-dependencies = [
- "aquamarine",
- "indexmap",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "utoipa",
-]
-
-[[package]]
-name = "local-jev-runtime"
-version = "0.3.4"
-dependencies = [
- "aquamarine",
- "indexmap",
- "local-jev-core",
- "ndarray 0.16.1",
- "num_cpus",
- "ort",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokenizers",
- "tracing",
-]
-
-[[package]]
-name = "local-jev-server"
-version = "0.3.4"
-dependencies = [
- "aquamarine",
- "axum",
- "chrono",
- "http-body-util",
- "indexmap",
- "local-jev-core",
- "local-jev-runtime",
- "metrics",
- "metrics-exporter-prometheus",
- "mimalloc",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "utoipa",
- "utoipa-swagger-ui",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2127,6 +2053,80 @@ dependencies = [
  "byteorder",
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "sokuto-cli"
+version = "0.3.5"
+dependencies = [
+ "aquamarine",
+ "clap",
+ "indexmap",
+ "mimalloc",
+ "serde",
+ "serde_json",
+ "sokuto-core",
+ "sokuto-runtime",
+ "sokuto-server",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "sokuto-core"
+version = "0.3.5"
+dependencies = [
+ "aquamarine",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "utoipa",
+]
+
+[[package]]
+name = "sokuto-runtime"
+version = "0.3.5"
+dependencies = [
+ "aquamarine",
+ "indexmap",
+ "ndarray 0.16.1",
+ "num_cpus",
+ "ort",
+ "serde",
+ "serde_json",
+ "sokuto-core",
+ "thiserror 2.0.20",
+ "tokenizers",
+ "tracing",
+]
+
+[[package]]
+name = "sokuto-server"
+version = "0.3.5"
+dependencies = [
+ "aquamarine",
+ "axum",
+ "chrono",
+ "http-body-util",
+ "indexmap",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "mimalloc",
+ "regex",
+ "serde",
+ "serde_json",
+ "sokuto-core",
+ "sokuto-runtime",
+ "thiserror 2.0.20",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "utoipa",
+ "utoipa-swagger-ui",
 ]
 
 [[package]]

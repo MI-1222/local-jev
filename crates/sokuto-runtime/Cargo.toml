@@ -1,0 +1,23 @@
+[package]
+name = "sokuto-runtime"
+version = "0.3.5"
+edition = "2024"
+
+[dependencies]
+aquamarine = "0.6.0"
+sokuto-core = { workspace = true }
+tokenizers = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+ort = { workspace = true }
+ndarray = { workspace = true }
+tracing = { workspace = true }
+num_cpus = { workspace = true }
+
+[features]
+default = []
+coreml = ["ort/coreml"]
+cuda = ["ort/cuda"]
+tensorrt = ["ort/tensorrt"]

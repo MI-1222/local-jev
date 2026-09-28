@@ -1,5 +1,5 @@
 # ==============================================================================
-# Local-Jev GPU (CUDA) 推論コンテナイメージ
+# Sokuto GPU (CUDA) 推論コンテナイメージ
 # 
 # NVIDIA CUDA 12.6 / cuDNN アクセラレータ対応 (Ubuntu 24.04: GCC 14 / glibc 2.39),
 # 多段マルチステージビルドによる高スループット推論コンテナ定義。
@@ -47,9 +47,9 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --features cuda --recipe-path recipe.json
 
-# ソースコード全体を投入して local-jev-cli をビルド
+# ソースコード全体を投入して sokuto-cli をビルド
 COPY . .
-RUN cargo build --release -p local-jev-cli --features cuda
+RUN cargo build --release -p sokuto-cli --features cuda
 
 # ONNX Runtime 動的ライブラリ (*.so) の抽出
 RUN mkdir -p /app/dylibs && \
@@ -72,8 +72,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/dylibs/ /usr/local/lib/
 RUN rm -f /usr/local/lib/.keep && ldconfig
 
-# local-jev CLI バイナリの配置
-COPY --from=builder /app/target/release/local-jev /usr/local/bin/local-jev
+# sokuto CLI バイナリの配置
+COPY --from=builder /app/target/release/sokuto /usr/local/bin/sokuto
 
 # 非 root ユーザー作成 (UID: 10001, GID: 10001)
 RUN groupadd -g 10001 jev && \
@@ -91,18 +91,18 @@ ENV NVIDIA_VISIBLE_DEVICES=all \
     ORT_TENSORRT_CACHE_PATH=/tmp/ort_trt_cache \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
-    LOCAL_JEV_HOST=0.0.0.0 \
-    LOCAL_JEV_PORT=3000 \
-    LOCAL_JEV_MODEL_DIR=/models/default \
-    LOCAL_JEV_PROVIDER=cuda
+    SOKUTO_HOST=0.0.0.0 \
+    SOKUTO_PORT=3000 \
+    SOKUTO_MODEL_DIR=/models/default \
+    SOKUTO_PROVIDER=cuda
 
 # HTTP API ポート公開
 EXPOSE 3000
 
 # 自己完結型ヘルスチェック
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["/usr/local/bin/local-jev", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
+    CMD ["/usr/local/bin/sokuto", "healthcheck", "--url", "http://127.0.0.1:3000/ready"]
 
 # デフォルト Entrypoint
-ENTRYPOINT ["/usr/local/bin/local-jev"]
+ENTRYPOINT ["/usr/local/bin/sokuto"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "3000", "--model-dir", "/models/default", "--provider", "cuda"]

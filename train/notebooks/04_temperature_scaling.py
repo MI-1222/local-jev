@@ -14,11 +14,11 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # 🌡️ Local-Jev: 事後温度較正 (Post-hoc Temperature Calibration) ノートブック
+    # 🌡️ Sokuto: 事後温度較正 (Post-hoc Temperature Calibration) ノートブック
 
     本ノートブックは、TypeSafe AI アーキテクチャに準拠した決定モデル「Jev」の
     **質問プリミティブ別・候補数バケット別の事後温度スケーリング ($\tau^*$ 算出)** を対話的に実行・検証し、
-    Rust 推論ランタイム (`local-jev-core` / `local-jev-runtime`) 向けに `calibration.json` を出力するための環境です。
+    Rust 推論ランタイム (`sokuto-core` / `sokuto-runtime`) 向けに `calibration.json` を出力するための環境です。
 
     ### 📌 事後温度スケーリングの目的と数理背景
     1. **過剰な自信 (Overconfidence) の是正**:

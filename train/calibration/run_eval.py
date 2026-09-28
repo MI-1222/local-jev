@@ -85,7 +85,7 @@ def run_evaluation_from_metrics(
 def main() -> None:
     """CLI エントリーポイント。"""
     parser = argparse.ArgumentParser(
-        description="Local-Jev キャリブレーション信頼性評価 CLI"
+        description="Sokuto キャリブレーション信頼性評価 CLI"
     )
     parser.add_argument(
         "--metrics",

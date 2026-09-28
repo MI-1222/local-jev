@@ -657,7 +657,7 @@ def generate_all_fixtures() -> dict[str, Any]:
 
     return {
         "version": "1.0",
-        "description": "Python Reference vs Rust local-jev-server E2E Parity Fixtures",
+        "description": "Python Reference vs Rust sokuto-server E2E Parity Fixtures",
         "generated_with": "sbintuitions/modernbert-ja-130m + models/default/model.onnx",
         "num_cases": len(fixture_cases),
         "cases": fixture_cases,
@@ -667,7 +667,7 @@ def generate_all_fixtures() -> dict[str, Any]:
 def main() -> None:
     """メイン実行関数。"""
     workspace_dir = Path(__file__).resolve().parent.parent.parent
-    fixtures_dir = workspace_dir / "crates" / "local-jev-server" / "tests" / "fixtures"
+    fixtures_dir = workspace_dir / "crates" / "sokuto-server" / "tests" / "fixtures"
     fixtures_dir.mkdir(parents=True, exist_ok=True)
     out_file = fixtures_dir / "e2e_parity_fixtures.json"
 

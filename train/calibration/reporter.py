@@ -212,7 +212,7 @@ class CalibrationReporter:
         status_badge = "✅ PASS" if overall_status == "PASS" else "❌ FAIL"
 
         lines = [
-            "# 📈 Local-Jev: キャリブレーション信頼性評価レポート",
+            "# 📈 Sokuto: キャリブレーション信頼性評価レポート",
             "",
             f"- **評価実行日時**: {now_str}",
             f"- **Phase 4 Exit Criteria 判定**: **{status_badge}**",

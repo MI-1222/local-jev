@@ -14,7 +14,7 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # 🎯 Local-Jev: RLCD (較正強化学習) ポリシー更新ノートブック
+    # 🎯 Sokuto: RLCD (較正強化学習) ポリシー更新ノートブック
 
     本ノートブックは、TypeSafe AI アーキテクチャに準拠した決定モデル「Jev」の
     **RLCD (Reinforcement Learning from Calibrated Decisions) によるポリシー最適化** を

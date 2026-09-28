@@ -1,15 +1,15 @@
 # ==============================================================================
-# Local-Jev 自己完結型 (All-in-One / Bake-in) 推論コンテナイメージ
+# Sokuto 自己完結型 (All-in-One / Bake-in) 推論コンテナイメージ
 # 
 # モデル成果物をコンテナイメージ内部 (/models/default) に内包し,
 # 外部ボリュームマウントなしで即時起動可能なオフライン配布向け定義。
 # 
 # ビルド引数:
-#   BASE_IMAGE: ベースとする local-jev イメージ (デフォルト: local-jev:cpu)
+#   BASE_IMAGE: ベースとする sokuto イメージ (デフォルト: sokuto:cpu)
 #   MODEL_TIER: 内包するモデルの Tier 指定 (tier1: 130M-INT8, tier2: 310M-INT8, デフォルト: tier2)
 # ==============================================================================
 
-ARG BASE_IMAGE=local-jev:cpu
+ARG BASE_IMAGE=sokuto:cpu
 FROM ${BASE_IMAGE} AS base
 
 ARG MODEL_TIER=tier2
@@ -42,9 +42,9 @@ RUN mkdir -p /models/default && \
 USER jev
 
 # Tier に応じた環境変数デフォルト値
-ENV LOCAL_JEV_MODEL_DIR=/models/default \
-    LOCAL_JEV_TIER=${MODEL_TIER}
+ENV SOKUTO_MODEL_DIR=/models/default \
+    SOKUTO_TIER=${MODEL_TIER}
 
 # デフォルト Entrypoint & CMD (外部指定なしで即時動作)
-ENTRYPOINT ["/usr/local/bin/local-jev"]
+ENTRYPOINT ["/usr/local/bin/sokuto"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "3000", "--model-dir", "/models/default"]

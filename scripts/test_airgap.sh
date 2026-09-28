@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Local-Jev エアギャップ (外部ネットワーク完全遮断) 起動検証スクリプト
+# Sokuto エアギャップ (外部ネットワーク完全遮断) 起動検証スクリプト
 #
 # Docker の `--network none` フラグを用いてコンテナの外部通信を物理的に遮断し,
 # 外部名前解決や Hugging Face Hub 等への暗黙の通信を一切行わずに
@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-IMAGE_NAME="${1:-local-jev:cpu}"
+IMAGE_NAME="${1:-sokuto:cpu}"
 TIER="${2:-tier2}"
 MODEL_DIR=""
 
@@ -48,7 +48,7 @@ if [[ -z "${MODEL_DIR}" ]]; then
 fi
 
 echo "=================================================================="
-echo "Local-Jev エアギャップ検証テストを開始します。"
+echo "Sokuto エアギャップ検証テストを開始します。"
 echo "イメージ: ${IMAGE_NAME}."
 echo "モデル Tier: ${TIER}."
 echo "モデルパス: ${MODEL_DIR}."
@@ -90,7 +90,7 @@ echo "[SUCCESS] エアギャップ環境でのインプロセス推論に成功�
 # 4. バックグラウンドサーバー起動とローカルヘルスチェック & メモリ検証
 echo ""
 echo ">>> Step 2: 独立ネットワーク名前空間でのサーバー起動 & ヘルスチェック検証"
-CONTAINER_NAME="local-jev-airgap-test-$$"
+CONTAINER_NAME="sokuto-airgap-test-$$"
 
 # コンテナ起動 (外部遮断ネットワーク)
 docker run -d \
@@ -121,7 +121,7 @@ while [[ ${ATTEMPTS} -lt ${MAX_ATTEMPTS} ]]; do
     ATTEMPTS=$((ATTEMPTS + 1))
     
     # コンテナ内部からヘルスチェックを実行 (外部ネットワークゼロを保証)
-    if docker exec "${CONTAINER_NAME}" /usr/local/bin/local-jev healthcheck --url http://127.0.0.1:3000/ready >/dev/null 2>&1; then
+    if docker exec "${CONTAINER_NAME}" /usr/local/bin/sokuto healthcheck --url http://127.0.0.1:3000/ready >/dev/null 2>&1; then
         HEALTHY=true
         break
     fi

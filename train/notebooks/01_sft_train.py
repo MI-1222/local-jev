@@ -14,7 +14,7 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # 🚀 Local-Jev: SFT (教師あり指示学習) ノートブック
+    # 🚀 Sokuto: SFT (教師あり指示学習) ノートブック
 
     本ノートブックは、TypeSafe AI アーキテクチャに準拠した非自己回帰型モデル「Jev」の
     SFT 学習ループを対話的に実行・検証・管理するための環境です。

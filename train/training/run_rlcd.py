@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
         argparse.Namespace: 解析済み引数オブジェクト。
     """
     parser = argparse.ArgumentParser(
-        description="Local-Jev RLCD (較正決定強化学習) 実行スクリプト。",
+        description="Sokuto RLCD (較正決定強化学習) 実行スクリプト。",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
