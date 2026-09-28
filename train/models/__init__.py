@@ -1,4 +1,4 @@
-"""Local-Jev モデル層パッケージ。"""
+"""Sokuto モデル層パッケージ。"""
 
 from .backbone import (
     DEFAULT_BACKBONE_MODEL_ID,

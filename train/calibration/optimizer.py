@@ -732,7 +732,7 @@ class TemperatureOptimizer:
         status = "達成" if metrics_summary["target_ece_met"] else "未達"
 
         lines = [
-            "# 📊 Local-Jev: 事後温度較正 (Post-hoc Calibration) サマリーレポート",
+            "# 📊 Sokuto: 事後温度較正 (Post-hoc Calibration) サマリーレポート",
             "",
             f"- **実行日時**: {datetime.now(tz=UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}",
             f"- **目標 ECE (< 0.10)**: **{status}** (事後 ECE: `{post_ece:.4f}`, 事前: `{pre_ece:.4f}`)",
@@ -778,7 +778,7 @@ class TemperatureOptimizer:
         lines.extend(
             [
                 "",
-                "## 3. Rust ランタイム (`crates/local-jev-core`) への反映方法",
+                "## 3. Rust ランタイム (`crates/sokuto-core`) への反映方法",
                 "",
                 "生成された `calibration.json` は、Rust ランタイムの `CalibrationConfig` スキーマと完全互換です。",
                 "モデル成果物ディレクトリへ配置して直接利用できます:",

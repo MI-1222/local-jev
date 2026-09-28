@@ -948,7 +948,7 @@ wheels = [
 ]
 
 [[package]]
-name = "local-jev-train"
+name = "sokuto-train"
 version = "0.3.4"
 source = { virtual = "." }
 dependencies = [

@@ -35,7 +35,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         argparse.Namespace: 解析済み引数オブジェクト。
     """
     parser = argparse.ArgumentParser(
-        description="Local-Jev SFT (教師あり指示学習) 実行スクリプト。",
+        description="Sokuto SFT (教師あり指示学習) 実行スクリプト。",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 

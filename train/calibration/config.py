@@ -24,7 +24,7 @@ NOUL_BUCKET: str = "noul"
 def matches_bucket_expr(expr: str, count: int) -> bool:
     """バケット定義文字列と候補数が一致するか判定する。
 
-    Rust 側 `crates/local-jev-core/src/contract/calibration.rs` の判定規則と厳密に整合する。
+    Rust 側 `crates/sokuto-core/src/contract/calibration.rs` の判定規則と厳密に整合する。
 
     Args:
         expr (str): バケット表現 (例: "2", "3-5", "11+")。

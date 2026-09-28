@@ -119,7 +119,7 @@ def main() -> None:
             "cargo",
             "test",
             "-p",
-            "local-jev-server",
+            "sokuto-server",
             "--test",
             "guardrails",
         ],

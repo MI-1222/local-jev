@@ -589,7 +589,7 @@ def create_quantized_bundle(
 def main() -> None:
     """CLI エントリーポイント。"""
     parser = argparse.ArgumentParser(
-        description="Local-Jev ONNX INT8 PTQ 量子化スクリプト。"
+        description="Sokuto ONNX INT8 PTQ 量子化スクリプト。"
     )
     parser.add_argument(
         "--model-dir",

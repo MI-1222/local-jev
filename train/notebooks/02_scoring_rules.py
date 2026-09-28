@@ -14,7 +14,7 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # 🎯 Local-Jev: 厳密適格スコアリング規則 (Strictly Proper Scoring Rules) 評価ノートブック
+    # 🎯 Sokuto: 厳密適格スコアリング規則 (Strictly Proper Scoring Rules) 評価ノートブック
 
     本ノートブックは、TypeSafe AI アーキテクチャに準拠した決定モデル「Jev」の
     厳密適格スコアリング規則の実装 における数理挙動を対話的に評価・可視化し、

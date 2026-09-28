@@ -1,5 +1,5 @@
 # ==============================================================================
-# Local-Jev 自動リリース & 配布ワークフロー
+# Sokuto 自動リリース & 配布ワークフロー
 #
 # Git タグ (v*.*.*) のプッシュまたは手動実行を契機に,
 # 1. クロスプラットフォーム・ネイティブバイナリのビルド (Linux x86_64/arm64, macOS Apple Silicon)
@@ -102,25 +102,25 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: local-jev CLI バイナリのビルド
+      - name: sokuto CLI バイナリのビルド
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release -p local-jev-cli --target ${{ matrix.target }}
+            cross build --release -p sokuto-cli --target ${{ matrix.target }}
           else
-            cargo build --release -p local-jev-cli --target ${{ matrix.target }}
+            cargo build --release -p sokuto-cli --target ${{ matrix.target }}
           fi
 
       - name: 配布アーカイブおよび共有ライブラリの収集
         run: |
           VERSION="${{ steps.vars.outputs.version }}"
-          PKG_NAME="local-jev-${VERSION}-${{ matrix.target }}"
+          PKG_NAME="sokuto-${VERSION}-${{ matrix.target }}"
           DIST_DIR="dist/${PKG_NAME}"
           mkdir -p "${DIST_DIR}/bin"
           mkdir -p "${DIST_DIR}/lib"
 
           # 1. バイナリの配置
-          cp "target/${{ matrix.target }}/release/local-jev" "${DIST_DIR}/bin/"
-          chmod +x "${DIST_DIR}/bin/local-jev"
+          cp "target/${{ matrix.target }}/release/sokuto" "${DIST_DIR}/bin/"
+          chmod +x "${DIST_DIR}/bin/sokuto"
 
           # 2. ONNX Runtime 共有ライブラリの抽出
           # ort クレートがダウンロードまたは配置した共有ライブラリを探索
@@ -146,15 +146,15 @@ jobs:
           # 3. 補助ファイル (Compose, ドキュメント) の配置
           cp docker-compose.yml "${DIST_DIR}/"
           cat << 'EOF' > "${DIST_DIR}/README.md"
-          # Local-Jev スタンドアロンバイナリパッケージ
+          # Sokuto スタンドアロンバイナリパッケージ
           
-          本パッケージには `bin/local-jev` 実行バイナリと、必要な `lib/` 共有ライブラリが同梱されています。
+          本パッケージには `bin/sokuto` 実行バイナリと、必要な `lib/` 共有ライブラリが同梱されています。
           rpath が設定されているため、アーカイブを展開して即座に実行可能です。
           
           ## 実行例
           ```bash
-          ./bin/local-jev --help
-          ./bin/local-jev serve --model-dir ./models/default
+          ./bin/sokuto --help
+          ./bin/sokuto serve --model-dir ./models/default
           ```
           EOF
 
@@ -167,8 +167,8 @@ jobs:
         with:
           name: binary-${{ matrix.target }}
           path: |
-            local-jev-*-${{ matrix.target }}.tar.gz
-            local-jev-*-${{ matrix.target }}.tar.gz.sha256
+            sokuto-*-${{ matrix.target }}.tar.gz
+            sokuto-*-${{ matrix.target }}.tar.gz.sha256
           retention-days: 5
 
       # Docker ビルド用の中間バイナリ成果物の保存 (Linux のみ)
@@ -178,8 +178,8 @@ jobs:
         with:
           name: docker-bin-${{ matrix.arch }}
           path: |
-            dist/local-jev-*/bin/local-jev
-            dist/local-jev-*/lib/libonnxruntime*
+            dist/sokuto-*/bin/sokuto
+            dist/sokuto-*/lib/libonnxruntime*
           retention-days: 1
 
   # ----------------------------------------------------------------------------
@@ -211,11 +211,11 @@ jobs:
           mkdir -p dist/bin/arm64 dist/lib/arm64
 
           # amd64
-          find tmp-amd64 -name "local-jev" -type f -exec cp {} dist/bin/amd64/ \;
+          find tmp-amd64 -name "sokuto" -type f -exec cp {} dist/bin/amd64/ \;
           find tmp-amd64 -name "libonnxruntime*.so*" -exec cp -a {} dist/lib/amd64/ \;
 
           # arm64
-          find tmp-arm64 -name "local-jev" -type f -exec cp {} dist/bin/arm64/ \;
+          find tmp-arm64 -name "sokuto" -type f -exec cp {} dist/bin/arm64/ \;
           find tmp-arm64 -name "libonnxruntime*.so*" -exec cp -a {} dist/lib/arm64/ \;
 
           rm -rf tmp-amd64 tmp-arm64
@@ -274,7 +274,7 @@ jobs:
       - name: 統合 SHA256SUMS の生成
         run: |
           cd release-artifacts
-          shasum -a 256 local-jev-*.tar.gz > SHA256SUMS
+          shasum -a 256 sokuto-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - name: GitHub Release への成果物添付と公開
@@ -282,7 +282,7 @@ jobs:
         with:
           tag_name: ${{ github.ref_name || github.event.inputs.tag_name }}
           files: |
-            release-artifacts/local-jev-*.tar.gz
+            release-artifacts/sokuto-*.tar.gz
             release-artifacts/SHA256SUMS
             docker-compose.yml
           draft: false
