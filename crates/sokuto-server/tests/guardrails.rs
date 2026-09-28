@@ -10,6 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use indexmap::IndexMap;
+use serde_json::{Value, json};
 use sokuto_core::contract::calibration::CalibrationConfig;
 use sokuto_core::schema::{Question, SystemOneRequest, SystemOneResponse};
 use sokuto_runtime::engine::{CoarseToFineConfig, InferenceEngine, SessionConfig};
@@ -19,7 +20,6 @@ use sokuto_server::error::ErrorResponse;
 use sokuto_server::guardrails::GuardrailConfig;
 use sokuto_server::guardrails::limits::LimitsConfig;
 use sokuto_server::state::AppState;
-use serde_json::{Value, json};
 use tower::ServiceExt;
 
 /// ワークスペースのルートディレクトリを取得する。

@@ -18,13 +18,13 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use serde_json::Value;
 use sokuto_core::contract::calibration::CalibrationConfig;
 use sokuto_core::schema::SystemOneResponse;
 use sokuto_runtime::engine::{CoarseToFineConfig, InferenceEngine, SessionConfig};
 use sokuto_runtime::tokenizer::JevTokenizer;
 use sokuto_server::create_router;
 use sokuto_server::state::AppState;
-use serde_json::Value;
 use tower::ServiceExt;
 
 /// 許容最大絶対誤差 (Atol)。

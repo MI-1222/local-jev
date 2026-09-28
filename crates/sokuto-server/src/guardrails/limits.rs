@@ -3,8 +3,8 @@
 //! リクエストの質問数、文字数、および推定トークン数を推論前に事前検証し、
 //! メモリ枯渇 (OOM) や GPU/CPU リソースの過負荷を未然に遮断する Fast-Fail 機構を提供する。
 
-use sokuto_core::schema::SystemOneRequest;
 use serde_json::Value;
+use sokuto_core::schema::SystemOneRequest;
 
 use crate::error::ServerError;
 

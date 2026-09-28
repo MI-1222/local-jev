@@ -9,8 +9,8 @@
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
-use sokuto_core::schema::Criteria;
 use regex::Regex;
+use sokuto_core::schema::Criteria;
 
 /// 特殊トークン文字列の検出正規表現パターン。
 static SPECIAL_TOKENS_REGEX: LazyLock<Regex> = LazyLock::new(|| {

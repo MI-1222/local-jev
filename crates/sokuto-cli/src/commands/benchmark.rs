@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use sokuto_core::contract::calibration::CalibrationConfig;
 use sokuto_core::schema::Question;
 use sokuto_runtime::engine::coarse::CoarseToFineConfig;
-use sokuto_runtime::engine::{
-    BatchScratchpad, ExecutionProvider, InferenceEngine, SessionConfig,
-};
+use sokuto_runtime::engine::{BatchScratchpad, ExecutionProvider, InferenceEngine, SessionConfig};
 use sokuto_runtime::tokenizer::JevTokenizer;
 
 use crate::commands::serve::{parse_provider, validate_model_dir};

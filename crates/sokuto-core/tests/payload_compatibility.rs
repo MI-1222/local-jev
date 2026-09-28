@@ -4,8 +4,8 @@
 //! 完全な互換性を検証する。
 
 use indexmap::IndexMap;
-use sokuto_core::{Answer, CoreError, QuestionType, SystemOneRequest, SystemOneResponse, Usage};
 use serde_json::json;
+use sokuto_core::{Answer, CoreError, QuestionType, SystemOneRequest, SystemOneResponse, Usage};
 
 /// 典型的な Choice, Score, Noul が混在するリクエスト JSON のデシリアライズテスト。
 #[test]

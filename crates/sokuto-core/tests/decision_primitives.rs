@@ -4,11 +4,11 @@
 //! キャリブレーション温度適用、境界値・極限値処理、および Jev レスポンス生成の総合検証を行う。
 
 use indexmap::IndexMap;
+use serde_json::json;
 use sokuto_core::{
     CalibrationConfig, Criteria, Question, SystemOneResponse, Usage, evaluate_choice,
     evaluate_noul, evaluate_question, evaluate_score,
 };
-use serde_json::json;
 
 /// Choice プリミティブの総合評価テスト。
 #[test]

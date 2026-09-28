@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use axum::extract::State;
 use axum::response::IntoResponse;
+use serde_json::Value;
 use sokuto_core::gating::evaluate_response_routing;
 use sokuto_core::schema::{QuestionType, SystemOneRequest, SystemOneResponse, Usage};
-use serde_json::Value;
 
 use crate::error::{ErrorResponse, ServerError};
 use crate::metrics::{

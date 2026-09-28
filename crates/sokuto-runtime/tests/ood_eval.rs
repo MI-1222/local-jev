@@ -601,10 +601,7 @@ fn test_ood_safety_valve_benchmark() {
             }
         }
         let auroc2 = pairs_correct / (id2.len() * ood2.len()) as f64;
-        println!(
-            "Tier 2 (310M-INT8) AUROC: {:.4} (目標 0.80 以上)。",
-            auroc2
-        );
+        println!("Tier 2 (310M-INT8) AUROC: {:.4} (目標 0.80 以上)。", auroc2);
         assert!(
             auroc2 >= 0.80,
             "Tier 2 AUROC が 0.80 以上であること。実際: {:.4}。",
@@ -643,7 +640,9 @@ fn test_ood_safety_valve_benchmark() {
         let tpr2 = (ood_detected as f64 / ood_samples.len() as f64) * 100.0;
         println!(
             "Tier 2 (310M-INT8) ハイブリッド OOD 検知率: {:.1}% ({}/{}) (目標 90.0% 以上)。",
-            tpr2, ood_detected, ood_samples.len()
+            tpr2,
+            ood_detected,
+            ood_samples.len()
         );
 
         // ID サンプルの誤棄却率 (FPR) も計測
@@ -673,7 +672,9 @@ fn test_ood_safety_valve_benchmark() {
         let fpr2 = (id_rejected as f64 / id_samples.len() as f64) * 100.0;
         println!(
             "Tier 2 (310M-INT8) ID 誤棄却率 (FPR): {:.1}% ({}/{})。",
-            fpr2, id_rejected, id_samples.len()
+            fpr2,
+            id_rejected,
+            id_samples.len()
         );
 
         assert!(

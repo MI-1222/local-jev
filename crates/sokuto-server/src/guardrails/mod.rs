@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use indexmap::IndexMap;
-use sokuto_core::schema::{Answer, Criteria, Question, QuestionType, SystemOneRequest};
 use serde_json::Value;
+use sokuto_core::schema::{Answer, Criteria, Question, QuestionType, SystemOneRequest};
 
 use crate::error::ServerError;
 use crate::guardrails::arithmetic::{ArithmeticConfig, compute_arithmetic_summary};

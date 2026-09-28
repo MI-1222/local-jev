@@ -3,11 +3,11 @@
 //! Python 側で出力される典型的な `calibration.json` および
 //! ONNX テンソル仕様が正しく解決・検証できることをテストする。
 
+use serde_json::json;
 use sokuto_core::{
     CalibrationConfig, ModelInputDimensions, QuestionType, TENSOR_ATTENTION_MASK, TENSOR_INPUT_IDS,
     TENSOR_LOGITS, TENSOR_OP_INDICES, TOKEN_OPTION_MARKER,
 };
-use serde_json::json;
 
 /// Python の CalibrationConfig が出力する JSON 形式との互換性テスト。
 #[test]

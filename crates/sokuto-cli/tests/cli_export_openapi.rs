@@ -3,8 +3,8 @@
 //! `sokuto export-openapi` による静的スキーマ生成と
 //! ファイル出力の完全性を検証する。
 
-use sokuto_server::openapi::export_openapi_json;
 use serde_json::Value;
+use sokuto_server::openapi::export_openapi_json;
 use std::fs;
 
 #[test]

@@ -4,9 +4,9 @@
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde::{Deserialize, Serialize};
 use sokuto_core::error::CoreError;
 use sokuto_runtime::error::RuntimeError;
-use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 /// Jev 互換のエラー詳細情報。
