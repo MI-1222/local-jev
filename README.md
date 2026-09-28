@@ -7,7 +7,7 @@
 <div style="text-align: center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Release: v0.3.4](https://img.shields.io/badge/Release-v0.3.4-informational.svg)](https://github.com/MI-1222/sokuto/releases)
+[![Release: v0.3.5](https://img.shields.io/badge/Release-v0.3.5-informational.svg)](https://github.com/MI-1222/sokuto/releases)
 [![Rust: 2024 Edition](https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust)](Cargo.toml)
 [![Docker: Multi-Arch](https://img.shields.io/badge/Docker-Multi--Arch-2496ED.svg?logo=docker)](docker-compose.yml)
 [![Tier 1: 130M-INT8](https://img.shields.io/badge/Tier_1-130M--INT8_12ms-success.svg)](models/modernbert-130m-int8)
@@ -200,7 +200,7 @@ Docker 環境を使わずに最速で起動する場合に推奨します。[Git
 
 ```bash
 # 例: macOS Apple Silicon の場合
-VERSION="v0.3.4"
+VERSION="v0.3.5"
 curl -sSL -O "https://github.com/MI-1222/sokuto/releases/download/${VERSION}/sokuto-${VERSION}-aarch64-apple-darwin.tar.gz"
 tar -xzf "sokuto-${VERSION}-aarch64-apple-darwin.tar.gz"
 
@@ -221,7 +221,7 @@ docker run -d \
   -p 3000:3000 \
   -v ./models/modernbert-310m-int8:/models/default:ro \
   -e SOKUTO_MODEL_DIR=/models/default \
-  ghcr.io/mi-1222/sokuto:v0.3.4
+  ghcr.io/mi-1222/sokuto:v0.3.5
 
 # (または 2. リポジトリ内 Docker Compose による起動)
 docker compose up -d sokuto-cpu

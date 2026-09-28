@@ -116,7 +116,7 @@ def main() -> None:
     )
     parser.add_argument("--tier", choices=["tier1", "tier2", "all"], default="all")
     parser.add_argument(
-        "--tag", type=str, help="Release tag (例: v0.3.4)", default=None
+        "--tag", type=str, help="Release tag (例: v0.3.5)", default=None
     )
     parser.add_argument(
         "--tag-only",
