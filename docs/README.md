@@ -62,8 +62,8 @@ flowchart TD
 `sokuto` の基本的な理念、なぜ自己回帰 LLM ではなく System One モデルが必要なのか、ローカル環境でミリ秒判定を体験するための最短ステップを解説
 
 - [overview.md](getting-started/overview.md): プロジェクトの理念、決定論的バックエンドの必要性、ローカル運用のメリット
-- [quickstart.md](getting-started/quickstart.md): Docker All-in-One による起動チュートリアルと基本リクエスト疎通
-- [installation.md](getting-started/installation.md): Docker Compose、スタンドアロンバイナリ、ソースビルド(Cargo)の手順
+- [quickstart.md](getting-started/quickstart.md): リポジトリクローンから Docker Compose による起動チュートリアルと基本リクエスト疎通
+- [installation.md](getting-started/installation.md): スタンドアロンバイナリ、Docker Compose、GHCR コンテナ、ソースビルド(Cargo)の導入手順
 
 ### 2. [API Reference](api/index.md)(インターフェース仕様編)
 

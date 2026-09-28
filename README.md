@@ -167,31 +167,17 @@ flowchart TD
 
 ## 🚀 Quick Start
 
-### 1. モデル成果物の取得 (Hugging Face Hub)
+利用環境に合わせて、
+**方法 A: スタンドアロンバイナリ(推奨・最も手軽・Docker/Clone不要)**、
+**方法 B: GHCR 事前ビルド済み Docker イメージ(Clone不要)**、
+または **方法 C: 本リポジトリを clone して Docker Compose で起動(開発・検証向け)**
+のいずれかを選択してください。
 
-最適化済みモデル(ONNX・トークナイザー・較正設定)を Hugging Face Hub から取得します。
+---
 
-- **公式モデルリポジトリ**:
-  - **Tier 2 (推奨・標準)**: [`MI-1222/sokuto-ja-310m-int8`](https://huggingface.co/MI-1222/sokuto-ja-310m-int8) (~540MB, 23ms, Choice 90.1%)
-  - **Tier 1 (低遅延エッジ向け)**: [`MI-1222/sokuto-ja-130m-int8`](https://huggingface.co/MI-1222/sokuto-ja-130m-int8) (~280MB, 12ms, Choice 87.8%)
+### 方法 A: スタンドアロンバイナリで起動(推奨・Docker不要・Clone不要)
 
-```bash
-# 付属スクリプトによる自動取得 (curl / huggingface-cli / hf を自動判別)
-./scripts/download_models.sh tier2
-
-# (任意) huggingface-cli を直接使用する場合
-huggingface-cli download MI-1222/sokuto-ja-310m-int8 \
-  --local-dir models/modernbert-310m-int8 \
-  --local-dir-use-symlinks False
-```
-
-### 2. 推論エンジンの起動
-
-利用環境に応じて **スタンドアロンバイナリ (GitHub Releases / Docker不要)** または **Docker (GHCR / Compose)** のいずれかを選択して起動します。
-
-#### 方法 A: スタンドアロンバイナリ (GitHub Releases)
-
-Docker 環境を使わずに最速で起動する場合に推奨します。[GitHub Releases](https://github.com/MI-1222/sokuto/releases) より、各プラットフォーム向けに ONNX Runtime 共有ライブラリが同梱されたアーカイブを取得・展開して即座に実行できます。
+Docker 環境を使わずに最速で起動する場合に推奨します。[GitHub Releases](https://github.com/MI-1222/sokuto/releases) より、各プラットフォーム向けに ONNX Runtime 共有ライブラリが同梱されたアーカイブを取得・展開して即座に実行できます(本プロジェクトの `git clone` や Docker は不要です)。
 
 - 配布ターゲット:
   - Linux x86_64: `sokuto-*-x86_64-unknown-linux-gnu.tar.gz`
@@ -211,25 +197,53 @@ cd "sokuto-${VERSION}-aarch64-apple-darwin"
 # (macOS でセキュリティ機能 Gatekeeper により未署名バイナリがブロックされる場合)
 # xattr -d com.apple.quarantine ./bin/sokuto
 
-# 2. ネイティブバイナリで起動 (Docker 不要)
+# 2. ネイティブバイナリで起動 (ポート 3000)
 ./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
-
-# (または 同梱 Compose で起動 - GHCR 事前ビルド済みイメージ利用)
-docker compose up -d
 ```
 
-#### 方法 B: Docker (GHCR 事前ビルド済みイメージ または ソースからの Compose)
+> [!NOTE]
+> 配布アーカイブには実行バイナリ `bin/sokuto` と ONNX Runtime 共有ライブラリ `lib/`、モデル取得スクリプト `download_models.sh` が同梱されています。
+> コンテナビルド用ファイル(`docker/` ディレクトリなど)は含まれていません。
+> アーカイブ展開ディレクトリ内では `./bin/sokuto serve` を直接実行してください。
+
+---
+
+### 方法 B: GHCR 事前ビルド済み Docker イメージで起動(Clone不要)
+
+リポジトリのソースコードを clone せず、Docker コンテナとして単体起動したい場合の手順です。
 
 ```bash
-# 1. GHCR 事前ビルド済みイメージによる直接起動 (ローカルでの Rust ビルド不要)
+# 1. 作業ディレクトリの作成と移動
+mkdir -p sokuto && cd sokuto
+
+# 2. モデル成果物をホスト側にダウンロード (実体ファイルとして保存)
+hf download MI-1222/sokuto-ja-310m-int8 \
+  --local-dir models/modernbert-310m-int8
+
+# 3. GHCR 事前ビルド済みイメージから直接起動 (ポート 3000)
 docker run -d \
   --name sokuto \
   -p 3000:3000 \
   -v ./models/modernbert-310m-int8:/models/default:ro \
   -e SOKUTO_MODEL_DIR=/models/default \
-  ghcr.io/mi-1222/sokuto:v0.3.6
+  ghcr.io/mi-1222/sokuto:latest
+```
 
-# (または 2. リポジトリ開発環境での Docker Compose による起動)
+---
+
+### 方法 C: 本リポジトリを clone して Docker Compose で起動(開発・検証向け)
+
+本プロジェクトの開発・検証を行う場合や、リポジトリ付属の Dockerfile や Docker Compose 定義を用いてローカルでビルド・起動したい場合の手順です。
+
+```bash
+# 1. リポジトリのクローンと移動
+git clone https://github.com/MI-1222/sokuto.git
+cd sokuto
+
+# 2. モデル成果物の取得 (リポジトリ付属 scripts/ 配下のスクリプトを実行)
+./scripts/download_models.sh tier2
+
+# 3. Docker Compose によるコンテナ起動 (ポート 3000)
 docker compose up -d sokuto-cpu
 ```
 
@@ -241,7 +255,7 @@ docker compose up -d sokuto-cpu
 > # {"status":"ready","model":"modernbert-310m-int8"}
 > ```
 >
-> さらに低遅延な Tier 1 (130M-INT8) を Docker Compose で使用する場合は `docker compose --profile tier1 up -d sokuto-tier1`(ポート 3001) を実行してください。
+> さらに低遅延な Tier 1 (130M-INT8) を Docker Compose で使用する場合は、`./scripts/download_models.sh tier1` 実行後に `docker compose --profile tier1 up -d sokuto-tier1`(ポート 3001)を実行してください。
 
 ### 3. 推論リクエストの送信 (`POST /v1/systemone`)
 

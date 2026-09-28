@@ -70,8 +70,7 @@ elif command -v huggingface-cli &> /dev/null; then
   echo "[*] huggingface-cli を検出しました。ダウンロードを開始します..."
   huggingface-cli download "${REPO_ID}" \
     --revision "${REVISION}" \
-    --local-dir "${TARGET_DIR}" \
-    --local-dir-use-symlinks False
+    --local-dir "${TARGET_DIR}"
 else
   # 2. curl による直接ダウンロード (Location リダイレクト追従のため -L 必須)
   echo "[*] curl を使用して Hugging Face Hub から直接ダウンロードします..."
