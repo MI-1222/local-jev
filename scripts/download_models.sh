@@ -13,7 +13,12 @@ REVISION="main"
 TIER="${1:-$DEFAULT_TIER}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+# scripts/ サブディレクトリ内にある場合は親ディレクトリ、パッケージ直下等の場合は自身を ROOT_DIR とする
+if [[ "$(basename "${SCRIPT_DIR}")" == "scripts" ]]; then
+  ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+else
+  ROOT_DIR="${SCRIPT_DIR}"
+fi
 MODELS_DIR="${ROOT_DIR}/models"
 
 case "${TIER}" in

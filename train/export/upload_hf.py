@@ -45,7 +45,7 @@ pipeline_tag: text-classification
 
 # {conf["title"]}
 
-日本語特化・TypeSafe AI「Jev (System 1)」のローカル推論基盤 [`sokuto`](https://github.com/MI-1222/local-jev) 用の公式モデル成果物です。
+日本語特化・TypeSafe AI「Jev (System 1)」のローカル推論基盤 [`sokuto`](https://github.com/MI-1222/sokuto) 用の公式モデル成果物です。
 文章生成を行わず、日本語ネイティブ (ModernBERT-ja) の単一フォワードパスで型付き確率決定 (Choice / Score / Noul) をミリ秒単位で返します。
 
 ## モデル仕様
