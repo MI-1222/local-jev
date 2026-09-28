@@ -2385,6 +2385,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "accelerate" },
     { name = "datasets" },
+    { name = "huggingface-hub" },
     { name = "marimo" },
     { name = "matplotlib" },
     { name = "onnx" },
@@ -2406,6 +2407,7 @@ dev = [
 requires-dist = [
     { name = "accelerate", specifier = ">=1.15.0" },
     { name = "datasets", specifier = ">=5.0.1" },
+    { name = "huggingface-hub", specifier = ">=1.32.0" },
     { name = "marimo", specifier = ">=0.24.2" },
     { name = "matplotlib", specifier = ">=3.10.0" },
     { name = "onnx", specifier = ">=1.23.0" },
