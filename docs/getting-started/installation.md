@@ -89,12 +89,12 @@ docker run -d --name sokuto-app \
 インターネットから完全隔離された本番環境へ持ち込むための配布アーカイブを自動生成できます。
 
 ```bash
-# 配布用アーカイブを生成(dist/sokuto-v0.3.5-cpu-tier2-*.tar.gz が生成される)
+# 配布用アーカイブを生成(dist/sokuto-v0.3.6-cpu-tier2-*.tar.gz が生成される)
 ./scripts/package_release.sh --tier tier2 --flavor cpu
 
 # 隔離サーバー上での展開とロード
-tar -xzf sokuto-v0.3.5-cpu-tier2-linux-amd64.tar.gz
-cd sokuto-v0.3.5-cpu-tier2-linux-amd64
+tar -xzf sokuto-v0.3.6-cpu-tier2-linux-amd64.tar.gz
+cd sokuto-v0.3.6-cpu-tier2-linux-amd64
 docker load -i sokuto-image.tar.gz
 docker compose up -d
 ```
@@ -111,7 +111,7 @@ GitHub Releases から各プラットフォーム向け(`x86_64-unknown-linux-gn
 パッケージには実行バイナリ、ONNX Runtime 共有ライブラリ、起動スクリプト、Compose 定義が同梱されています。
 
 ```bash
-VERSION="v0.3.5"
+VERSION="v0.3.6"
 ARCH="aarch64-apple-darwin" # または x86_64-unknown-linux-gnu
 
 # アーカイブの取得と展開
