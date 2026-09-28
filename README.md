@@ -208,6 +208,9 @@ cd "sokuto-${VERSION}-aarch64-apple-darwin"
 # 1. モデル取得 (Hugging Face Hub)
 ./download_models.sh tier2
 
+# (macOS でセキュリティ機能 Gatekeeper により未署名バイナリがブロックされる場合)
+# xattr -d com.apple.quarantine ./bin/sokuto
+
 # 2. ネイティブバイナリで起動 (Docker 不要)
 ./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
 
@@ -284,38 +287,30 @@ curl -X POST http://localhost:3000/v1/systemone \
 
 ```json
 {
-  "model": "modernbert-310m-int8",
   "answers": {
     "intent": {
       "choice": "delivery_status",
-      "confidence": 0.948,
       "probabilities": {
-        "delivery_status": 0.9652,
-        "cancellation": 0.0211,
-        "technical_support": 0.0094,
-        "other": 0.0043
-      }
+        "delivery_status": 0.6582546176775596,
+        "cancellation": 0.13302314239776405,
+        "technical_support": 0.05012881390077335,
+        "other": 0.158593426023903
+      },
+      "confidence": 0.14439466872871431
     },
     "urgency": {
-      "score": 3.12,
-      "confidence": 0.824,
+      "score": 2.818188185321464,
       "probabilities": {
-        "0": 0.012,
-        "1": 0.114,
-        "2": 0.612,
-        "3": 0.262
-      }
+        "低 (通常営業日内に対応)": 0.037560237431054834,
+        "中 (当日中に確認)": 0.02542925627019023,
+        "高 (優先的な調査が必要)": 0.01827258984499057,
+        "緊急 (即時エスカレーション要)": 0.9187379164537643
+      },
+      "confidence": 0.811121681845092
     },
-    "requires_human": {
-      "noul": 0.742,
-      "confidence": 0.742
-    }
+    "requires_human": { "noul": 0.104548343005757 }
   },
-  "usage": {
-    "prompt_tokens": 128,
-    "completion_tokens": 0,
-    "total_tokens": 128
-  }
+  "usage": { "prompt_tokens": 211, "completion_tokens": 0, "total_tokens": 211 }
 }
 ```
 

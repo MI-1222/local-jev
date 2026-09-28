@@ -129,6 +129,15 @@ cd "sokuto-${VERSION}-${ARCH}"
 ./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
 ```
 
+> [!NOTE]
+> **macOS 環境での Gatekeeper による実行ブロックについて**
+> macOS では、セキュリティ機能（Gatekeeper）によってインターネットからダウンロードした未署名（未公証）のバイナリ実行がブロックされる場合があります。
+> 実行時にブロックされたり終了してしまう場合は、以下のコマンドで隔離属性を解除してください。
+>
+> ```sh
+> xattr -d com.apple.quarantine ./bin/sokuto
+> ```
+
 ### パターン B: システム全体へのバイナリ配置
 
 バイナリ `sokuto` と ONNX Runtime 共有ライブラリ(`libonnxruntime.so` または `libonnxruntime.dylib`)をシステムのライブラリパスへ配置して運用する場合の手順です。

@@ -327,6 +327,15 @@ Docker を使用せず直接ネイティブプロセスとして実行するこ�
 ./bin/sokuto serve --model-dir ./models/default --port 3000
 \`\`\`
 
+> [!NOTE]
+> **macOS で実行する場合の注意**
+> macOS 環境では、セキュリティ機能（Gatekeeper）によってインターネットからダウンロードした未署名（未公証）のバイナリの実行がブロックされ、起動できない（あるいは「Killed: 9」等で終了する）場合があります。
+> その場合は、以下のコマンドで隔離属性（quarantine）を解除してください。
+> \`\`\`sh
+> xattr -d com.apple.quarantine ./bin/sokuto
+> \`\`\`
+
+
 ### 方法 B: Docker Compose での起動 (事前ビルド済み GHCR イメージ)
 
 コンテナ環境で起動したい場合は、同梱の \`docker-compose.yml\` を利用できます。

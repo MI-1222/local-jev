@@ -176,6 +176,9 @@ jobs:
           # ヘルプ確認
           ./bin/sokuto --help
 
+          # (macOS でセキュリティ機能 Gatekeeper によりブロックされる場合)
+          # xattr -d com.apple.quarantine ./bin/sokuto
+
           # サーバー起動 (Tier 2 モデルを指定)
           ./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
           ```
