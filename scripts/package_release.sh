@@ -147,6 +147,13 @@ else
     find "${ROOT_DIR}/target" -name "libonnxruntime*.dylib" -exec cp -a {} "${PACKAGE_DIR}/lib/" \; 2>/dev/null || true
 fi
 
+# スクリプトの同梱
+mkdir -p "${PACKAGE_DIR}/scripts"
+if [[ -f "${ROOT_DIR}/scripts/download_models.sh" ]]; then
+    cp "${ROOT_DIR}/scripts/download_models.sh" "${PACKAGE_DIR}/scripts/"
+    chmod +x "${PACKAGE_DIR}/scripts/download_models.sh"
+fi
+
 # 5. モデル成果物の同梱 (allinone 以外の場合、または検証用)
 echo "[INFO] モデル成果物を同梱中..."
 cp -r "${SRC_MODEL_DIR}"/* "${PACKAGE_DIR}/models/default/"
@@ -287,7 +294,20 @@ Docker を使用せず、直接ネイティブプロセスとして実行可能�
 - \`bin/sokuto\`: CLI / サーバー実行バイナリ。
 - \`lib/\`: ONNX Runtime 共有ライブラリ。
 - \`models/default/\`: 推論用モデル成果物 (${TIER}: ONNX グラフ, トークナイザー, 較正設定)。
+- \`scripts/download_models.sh\`: モデル成果物ダウンロードスクリプト。
 - \`deploy.sh\`: 起動スクリプト。
+
+## モデルの追加・更新 (Hugging Face Hub)
+
+別 Tier のモデルや最新成果物を取得する場合は、同梱のスクリプトを使用します。
+
+\`\`\`bash
+# Tier 2 (310M-INT8) の取得 (保存先: ./models/modernbert-310m-int8)
+./scripts/download_models.sh tier2
+
+# Tier 1 (130M-INT8) の取得 (保存先: ./models/quantized)
+./scripts/download_models.sh tier1
+\`\`\`
 
 ## 起動手順
 
