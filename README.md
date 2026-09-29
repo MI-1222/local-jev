@@ -10,8 +10,8 @@
 [![Release: v0.3.6](https://img.shields.io/badge/Release-v0.3.6-informational.svg)](https://github.com/MI-1222/sokuto/releases)
 [![Rust: 2024 Edition](https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust)](Cargo.toml)
 [![Docker: Multi-Arch](https://img.shields.io/badge/Docker-Multi--Arch-2496ED.svg?logo=docker)](docker-compose.yml)
-[![Tier 1: 130M-INT8](https://img.shields.io/badge/Tier_1-130M--INT8_12ms-success.svg)](models/modernbert-130m-int8)
-[![Tier 2: 310M-INT8](https://img.shields.io/badge/Tier_2-310M--INT8_23ms-success.svg)](models/modernbert-310m-int8)
+[![Tier 1: 130M-INT8](https://img.shields.io/badge/Tier_1-130M--INT8_12ms-success.svg)](https://huggingface.co/MI-1222/sokuto-ja-130m-int8)
+[![Tier 2: 310M-INT8](https://img.shields.io/badge/Tier_2-310M--INT8_23ms-success.svg)](https://huggingface.co/MI-1222/sokuto-ja-310m-int8)
 
 </div>
 
