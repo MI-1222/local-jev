@@ -143,15 +143,14 @@ jobs:
             fi
           fi
 
-          # 3. 補助ファイル (Compose, モデル取得スクリプト, ドキュメント) の配置
-          cp docker-compose.yml "${DIST_DIR}/"
+          # 3. 補助ファイル (モデル取得スクリプト, パッケージ用README) の配置
           cp scripts/download_models.sh "${DIST_DIR}/"
           chmod +x "${DIST_DIR}/download_models.sh"
           cat << 'EOF' > "${DIST_DIR}/README.md"
           # Sokuto スタンドアロンバイナリパッケージ
 
           本パッケージには `bin/sokuto` 実行バイナリと、必要な `lib/` 共有ライブラリが同梱されています。
-          rpath が設定されているため、アーカイブを展開して即座に実行可能です。
+          rpath が設定されているため、アーカイブを展開して即座に実行可能です(Docker やソースコードの Clone は不要です)。
 
           ## 1. モデル成果物の取得 (Hugging Face Hub)
 
@@ -175,6 +174,9 @@ jobs:
           ```bash
           # ヘルプ確認
           ./bin/sokuto --help
+
+          # (macOS でセキュリティ機能 Gatekeeper によりブロックされる場合)
+          # xattr -d com.apple.quarantine ./bin/sokuto
 
           # サーバー起動 (Tier 2 モデルを指定)
           ./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
@@ -323,19 +325,16 @@ jobs:
           日本語特化・TypeSafe AI「Jev (System One)」のローカル／オンプレミス推論基盤 \`sokuto\` の成果物リリースです。
 
           ### 📦 配布バイナリ & コンテナ
-          - **スタンドアロンバイナリ**: 下記 Assets より対象 OS/Arch の \`sokuto-${VERSION}-*.tar.gz\` をダウンロードしてください (ONNX Runtime 共有ライブラリ同梱)。
-          - **Multi-Arch Docker イメージ**: \`docker pull ghcr.io/${{ github.repository }}:${VERSION}\` (または \`latest\`)
+          - **スタンドアロンバイナリ (推奨・Docker/Clone不要)**:
+            下記 Assets より対象 OS/Arch の \`sokuto-${VERSION}-*.tar.gz\` をダウンロード・展開してください (ONNX Runtime 共有ライブラリ同梱)。
+            展開後、同梱の \`./download_models.sh tier2\` でモデルを取得し、\`./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000\` で起動します。
+          - **Multi-Arch Docker イメージ (GHCR・Clone不要)**:
+            \`docker run -d -p 3000:3000 -v ./models/modernbert-310m-int8:/models/default:ro ghcr.io/${{ github.repository }}:${VERSION}\`
 
           ### 🤗 Hugging Face Hub モデル成果物
           推論実行に必要な最適化済み ONNX モデル・較正設定は Hugging Face Hub で管理されています:
           - **Tier 2 (310M-INT8 / 推奨標準)**: [MI-1222/sokuto-ja-310m-int8](https://huggingface.co/MI-1222/sokuto-ja-310m-int8) (23ms, Choice 90.1%)
           - **Tier 1 (130M-INT8 / 低遅延)**: [MI-1222/sokuto-ja-130m-int8](https://huggingface.co/MI-1222/sokuto-ja-130m-int8) (12ms, Choice 87.8%)
-
-          #### モデル取得スクリプト:
-          \`\`\`sh
-          # 添付の download_models.sh で自動取得
-          ./download_models.sh tier2
-          \`\`\`
           EOF
 
       - name: GitHub Release への成果物添付と公開
@@ -347,7 +346,6 @@ jobs:
             release-artifacts/sokuto-*.tar.gz
             release-artifacts/SHA256SUMS
             release-artifacts/download_models.sh
-            docker-compose.yml
           draft: false
           prerelease: false
           generate_release_notes: true

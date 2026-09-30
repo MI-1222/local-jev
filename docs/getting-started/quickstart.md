@@ -1,6 +1,12 @@
 # クイックスタートガイド
 
-このチュートリアルでは、Docker Compose を用いて `sokuto` の推論サーバーを立ち上げ、3 つの決定プリミティブ(Choice, Score, Noul)を一括実行するリクエストを送信して結果を受け取るまでの手順を最短 5 分で体験します。
+このチュートリアルでは、**本リポジトリを clone して Docker Compose を用いて** `sokuto` の推論サーバーを立ち上げ、
+3つの決定プリミティブ(Choice, Score, Noul)を一括実行するリクエストを送信して結果を受け取るまでの手順を解説します。
+
+> [!TIP]
+> **Docker を使わずに試したい場合**
+>
+> Docker やソースコードの clone を行わずにネイティブバイナリで即座に動かしたい場合は、[インストールガイド: 方法 1 (スタンドアロンバイナリ)](installation.md#2-方法-1-スタンドアロンバイナリによる導入推奨最も手軽dockerclone不要) をご利用ください。
 
 ```mermaid
 sequenceDiagram
@@ -29,14 +35,25 @@ sequenceDiagram
 以下の環境がインストールされていることを確認してください。
 
 - **Docker** および **Docker Compose**(Docker Desktop, OrbStack, または Linux Docker Engine)
-- curl
+- **curl**
 - インターネット接続(初回モデル取得時のみ使用)
 
 ---
 
-## ステップ 1: モデル成果物のダウンロード
+## ステップ 1: リポジトリのクローンと移動
 
-`sokuto` リポジトリのルートディレクトリで、提供されているダウンロードスクリプトを実行し、標準の **Tier 2(310M-INT8)** モデル成果物を取得します。
+本リポジトリをローカル環境へクローンし、プロジェクトルートへ移動します。
+
+```bash
+git clone https://github.com/MI-1222/sokuto.git
+cd sokuto
+```
+
+---
+
+## ステップ 2: モデル成果物のダウンロード
+
+リポジトリルートで付属のダウンロードスクリプトを実行し、標準の **Tier 2(310M-INT8)** モデル成果物を取得します。
 
 ```bash
 # 標準の Tier 2 モデル(約 540MB)を自動ダウンロード
@@ -48,7 +65,7 @@ sequenceDiagram
 
 ---
 
-## ステップ 2: Docker Compose による起動
+## ステップ 3: Docker Compose による起動
 
 ダウンロードしたモデルをマウントして、推論コンテナをバックグラウンドで起動します。
 
@@ -66,14 +83,18 @@ docker compose logs -f sokuto-cpu
 次のようなログが出力されれば起動成功です。
 
 ```text
-INFO sokuto_runtime::pool: Initializing OrtInferencePool (pool_size: 2, intra_threads: 4, inter_threads: 1)
-INFO sokuto_runtime::session: ONNX Runtime session initialized successfully. model=/models/default/model.onnx
-INFO sokuto_server: sokuto-server listening on http://0.0.0.0:3000
+INFO sokuto_cli::commands::serve: sokuto サーバーを起動します (モデル: /models/default, アドレス: 0.0.0.0:3000, セッションプール数: 2)...
+INFO sokuto_cli::commands::serve: 較正温度設定をロードしました: /models/default/calibration.json
+INFO sokuto_server: HTTP サーバーを起動します (アドレス: http://0.0.0.0:3000)...
+INFO sokuto_server: Swagger UI: http://0.0.0.0:3000/swagger-ui
+INFO sokuto_server: OpenAPI JSON: http://0.0.0.0:3000/api-docs/openapi.json
+INFO sokuto_server: メトリクス: http://0.0.0.0:3000/metrics
+INFO sokuto_server: ヘルスチェック: http://0.0.0.0:3000/health, http://0.0.0.0:3000/ready
 ```
 
 ---
 
-## ステップ 3: ヘルスチェックの確認
+## ステップ 4: ヘルスチェックの確認
 
 `/ready` エンドポイントを叩き、推論プールがリクエストを受付可能な状態にあるか確認します。
 
@@ -91,7 +112,7 @@ curl -s http://localhost:3000/ready
 
 ---
 
-## ステップ 4: 初めての推論リクエスト送信
+## ステップ 5: 初めての推論リクエスト送信
 
 カスタマーサポートに届いた 1 件の問い合わせ文章(State)に対して、以下の 3 つの判断を**単一フォワードパスで同時に**下すリクエストを送信します。
 
@@ -137,7 +158,7 @@ curl -X POST http://localhost:3000/v1/systemone \
 
 ---
 
-## ステップ 5: レスポンスの読み解き
+## ステップ 6: レスポンスの読み解き
 
 わずか数十ミリ秒で、以下のような完全構造化 JSON レスポンスが返却されます。
 

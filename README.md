@@ -10,8 +10,8 @@
 [![Release: v0.3.6](https://img.shields.io/badge/Release-v0.3.6-informational.svg)](https://github.com/MI-1222/sokuto/releases)
 [![Rust: 2024 Edition](https://img.shields.io/badge/Rust-2024_Edition-orange.svg?logo=rust)](Cargo.toml)
 [![Docker: Multi-Arch](https://img.shields.io/badge/Docker-Multi--Arch-2496ED.svg?logo=docker)](docker-compose.yml)
-[![Tier 1: 130M-INT8](https://img.shields.io/badge/Tier_1-130M--INT8_12ms-success.svg)](models/modernbert-130m-int8)
-[![Tier 2: 310M-INT8](https://img.shields.io/badge/Tier_2-310M--INT8_23ms-success.svg)](models/modernbert-310m-int8)
+[![Tier 1: 130M-INT8](https://img.shields.io/badge/Tier_1-130M--INT8_12ms-success.svg)](https://huggingface.co/MI-1222/sokuto-ja-130m-int8)
+[![Tier 2: 310M-INT8](https://img.shields.io/badge/Tier_2-310M--INT8_23ms-success.svg)](https://huggingface.co/MI-1222/sokuto-ja-310m-int8)
 
 </div>
 
@@ -106,7 +106,7 @@ flowchart TD
 | **確率較正 (ECE)**          | 過信あり ([出荷時 ECE 31.4% 〜 46.6%](https://github.com/NandhaKishorM/laya#calibration))                                                                           | **厳密適格スコア較正 (ECE 2.61%)** (信頼度と確率が完全一致)      |
 | **OOD(該当なし)検知**       | なし(Confidence Gatingによるフォールバック, プロンプトへの「該当なし」の明示 により対処)                                                                            | **ヘルムホルツ自由エネルギー安全弁** (検知率 **92.3%**)          |
 | **推論ランタイム**          | Python / PyTorch / Transformers (メモリ大)                                                                                                                          | **純 Rust (Axum + ONNX Runtime)** (ゼロアロケーション)           |
-| **ハードウェア要件**        | GPU 推論推奨 ([T4 等で 32.8ms](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#headline), CPU では低速)                                               | **CPU のみで 12.78ms (Tier 1) / 23.56ms (Tier 2)**               |
+| **ハードウェア要件**        | GPU 推論推奨 ([T4 等で 32.8ms](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#headline), CPU では低速)                                               | **CPU のみで 12.61ms (Tier 1) / 23.28ms (Tier 2)**               |
 | **コンテナ常駐メモリ**      | [5モデルロード時で 9.3 GiB](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#server-cpu-amd-epyc-9r14-4-cores-linux)                                   | **280MB (Tier 1) / 538MB (Tier 2)**                              |
 | **INT8 量子化パリティ**     | FP32 / FP16 のみ                                                                                                                                                    | **ハイブリッド動的 INT8**                                        |
 
@@ -153,45 +153,31 @@ flowchart TD
 | :--------------------- | :------------------------------------------------------ | :--------------------------------------------------- |
 | **バックボーン**       | `sbintuitions/modernbert-ja-130m`                       | `sbintuitions/modernbert-ja-310m`                    |
 | **量子化方式**         | ハイブリッド動的 INT8 (バックボーンのみ INT8)           | ハイブリッド動的 INT8 (バックボーンのみ INT8)        |
-| **モデルサイズ**       | 278.4 MB (FP32 比 44.9% 削減)                           | 538.0 MB (FP32 比 55.6% 削減)                        |
+| **モデルサイズ**       | 278.4 MB (FP32 比 44.95% 削減)                          | 537.5 MB (FP32 比 55.62% 削減)                       |
 | **Top-1 決定一致率**   | **100.0%** (FP32 と完全一致)                            | **100.0%** (FP32 と完全一致)                         |
-| **CPU 推論遅延 (p50)** | **12.78 ms** (138.4 decisions/sec)                      | **23.56 ms** (83.7 decisions/sec)                    |
+| **CPU 推論遅延 (p50)** | **12.61 ms** (ピーク 146.7 dps, Scratchpad 156.9 dps)   | **23.28 ms** (ピーク 72.8 dps)                       |
 | **コンテナ常駐 RAM**   | < 350 MB                                                | < 750 MB (1GB 制限環境下で安定稼働)                  |
-| **分類精度 (Choice)**  | 87.8%                                                   | **90.1%**                                            |
-| **真偽精度 (Noul)**    | 96.2%                                                   | **97.5%**                                            |
+| **分類精度 (Choice)**  | 87.84%                                                  | **90.09%**                                           |
+| **真偽精度 (Noul)**    | 96.20%                                                  | **97.50%**                                           |
 | **期待較正誤差 (ECE)** | 6.29%                                                   | **2.61%** (高精度較正)                               |
-| **OOD 検知率**         | 92.3% (AUROC 97.6%)                                     | 92.3% (AUROC 80.5%, ハイブリッド安全弁)              |
+| **OOD 検知率**         | 92.3% (AUROC 97.63%)                                    | 92.3% (AUROC 80.47%, ハイブリッド安全弁)             |
 | **推奨ユースケース**   | エッジ・IoT、大量イベントフィルタリング、低遅延ルーター | 複雑な規約判定、法務・金融トリアージ、高精度分類基盤 |
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. モデル成果物の取得 (Hugging Face Hub)
+利用環境に合わせて、
+**方法 A: スタンドアロンバイナリ(推奨・最も手軽・Docker/Clone不要)**、
+**方法 B: GHCR 事前ビルド済み Docker イメージ(Clone不要)**、
+または **方法 C: 本リポジトリを clone して Docker Compose で起動(開発・検証向け)**
+のいずれかを選択してください。
 
-最適化済みモデル(ONNX・トークナイザー・較正設定)を Hugging Face Hub から取得します。
+---
 
-- **公式モデルリポジトリ**:
-  - **Tier 2 (推奨・標準)**: [`MI-1222/sokuto-ja-310m-int8`](https://huggingface.co/MI-1222/sokuto-ja-310m-int8) (~540MB, 23ms, Choice 90.1%)
-  - **Tier 1 (低遅延エッジ向け)**: [`MI-1222/sokuto-ja-130m-int8`](https://huggingface.co/MI-1222/sokuto-ja-130m-int8) (~280MB, 12ms, Choice 87.8%)
+### 方法 A: スタンドアロンバイナリで起動(推奨・Docker不要・Clone不要)
 
-```bash
-# 付属スクリプトによる自動取得 (curl / huggingface-cli / hf を自動判別)
-./scripts/download_models.sh tier2
-
-# (任意) huggingface-cli を直接使用する場合
-huggingface-cli download MI-1222/sokuto-ja-310m-int8 \
-  --local-dir models/modernbert-310m-int8 \
-  --local-dir-use-symlinks False
-```
-
-### 2. 推論エンジンの起動
-
-利用環境に応じて **スタンドアロンバイナリ (GitHub Releases / Docker不要)** または **Docker (GHCR / Compose)** のいずれかを選択して起動します。
-
-#### 方法 A: スタンドアロンバイナリ (GitHub Releases)
-
-Docker 環境を使わずに最速で起動する場合に推奨します。[GitHub Releases](https://github.com/MI-1222/sokuto/releases) より、各プラットフォーム向けに ONNX Runtime 共有ライブラリが同梱されたアーカイブを取得・展開して即座に実行できます。
+Docker 環境を使わずに最速で起動する場合に推奨します。[GitHub Releases](https://github.com/MI-1222/sokuto/releases) より、各プラットフォーム向けに ONNX Runtime 共有ライブラリが同梱されたアーカイブを取得・展開して即座に実行できます(本プロジェクトの `git clone` や Docker は不要です)。
 
 - 配布ターゲット:
   - Linux x86_64: `sokuto-*-x86_64-unknown-linux-gnu.tar.gz`
@@ -208,25 +194,56 @@ cd "sokuto-${VERSION}-aarch64-apple-darwin"
 # 1. モデル取得 (Hugging Face Hub)
 ./download_models.sh tier2
 
-# 2. ネイティブバイナリで起動 (Docker 不要)
-./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
+# (macOS でセキュリティ機能 Gatekeeper により未署名バイナリがブロックされる場合)
+# xattr -d com.apple.quarantine ./bin/sokuto
 
-# (または 同梱 Compose で起動 - GHCR 事前ビルド済みイメージ利用)
-docker compose up -d
+# 2. ネイティブバイナリで起動 (ポート 3000)
+./bin/sokuto serve --model-dir ./models/modernbert-310m-int8 --port 3000
 ```
 
-#### 方法 B: Docker (GHCR 事前ビルド済みイメージ または ソースからの Compose)
+> [!NOTE]
+> 配布アーカイブには実行バイナリ `bin/sokuto` と ONNX Runtime 共有ライブラリ `lib/`、モデル取得スクリプト `download_models.sh` が同梱されています。
+> コンテナビルド用ファイル(`docker/` ディレクトリなど)は含まれていません。
+> アーカイブ展開ディレクトリ内では `./bin/sokuto serve` を直接実行してください。
+
+---
+
+### 方法 B: GHCR 事前ビルド済み Docker イメージで起動(Clone不要)
+
+リポジトリのソースコードを clone せず、Docker コンテナとして単体起動したい場合の手順です。
 
 ```bash
-# 1. GHCR 事前ビルド済みイメージによる直接起動 (ローカルでの Rust ビルド不要)
+# 1. 作業ディレクトリの作成と移動
+mkdir -p sokuto && cd sokuto
+
+# 2. モデル成果物をホスト側にダウンロード (実体ファイルとして保存)
+hf download MI-1222/sokuto-ja-310m-int8 \
+  --local-dir models/modernbert-310m-int8
+
+# 3. GHCR 事前ビルド済みイメージから直接起動 (ポート 3000)
 docker run -d \
   --name sokuto \
   -p 3000:3000 \
   -v ./models/modernbert-310m-int8:/models/default:ro \
   -e SOKUTO_MODEL_DIR=/models/default \
-  ghcr.io/mi-1222/sokuto:v0.3.6
+  ghcr.io/mi-1222/sokuto:latest
+```
 
-# (または 2. リポジトリ開発環境での Docker Compose による起動)
+---
+
+### 方法 C: 本リポジトリを clone して Docker Compose で起動(開発・検証向け)
+
+本プロジェクトの開発・検証を行う場合や、リポジトリ付属の Dockerfile や Docker Compose 定義を用いてローカルでビルド・起動したい場合の手順です。
+
+```bash
+# 1. リポジトリのクローンと移動
+git clone https://github.com/MI-1222/sokuto.git
+cd sokuto
+
+# 2. モデル成果物の取得 (リポジトリ付属 scripts/ 配下のスクリプトを実行)
+./scripts/download_models.sh tier2
+
+# 3. Docker Compose によるコンテナ起動 (ポート 3000)
 docker compose up -d sokuto-cpu
 ```
 
@@ -238,7 +255,7 @@ docker compose up -d sokuto-cpu
 > # {"status":"ready","model":"modernbert-310m-int8"}
 > ```
 >
-> さらに低遅延な Tier 1 (130M-INT8) を Docker Compose で使用する場合は `docker compose --profile tier1 up -d sokuto-tier1`(ポート 3001) を実行してください。
+> さらに低遅延な Tier 1 (130M-INT8) を Docker Compose で使用する場合は、`./scripts/download_models.sh tier1` 実行後に `docker compose --profile tier1 up -d sokuto-tier1`(ポート 3001)を実行してください。
 
 ### 3. 推論リクエストの送信 (`POST /v1/systemone`)
 
@@ -284,38 +301,30 @@ curl -X POST http://localhost:3000/v1/systemone \
 
 ```json
 {
-  "model": "modernbert-310m-int8",
   "answers": {
     "intent": {
       "choice": "delivery_status",
-      "confidence": 0.948,
       "probabilities": {
-        "delivery_status": 0.9652,
-        "cancellation": 0.0211,
-        "technical_support": 0.0094,
-        "other": 0.0043
-      }
+        "delivery_status": 0.6582546176775596,
+        "cancellation": 0.13302314239776405,
+        "technical_support": 0.05012881390077335,
+        "other": 0.158593426023903
+      },
+      "confidence": 0.14439466872871431
     },
     "urgency": {
-      "score": 3.12,
-      "confidence": 0.824,
+      "score": 2.818188185321464,
       "probabilities": {
-        "0": 0.012,
-        "1": 0.114,
-        "2": 0.612,
-        "3": 0.262
-      }
+        "低 (通常営業日内に対応)": 0.037560237431054834,
+        "中 (当日中に確認)": 0.02542925627019023,
+        "高 (優先的な調査が必要)": 0.01827258984499057,
+        "緊急 (即時エスカレーション要)": 0.9187379164537643
+      },
+      "confidence": 0.811121681845092
     },
-    "requires_human": {
-      "noul": 0.742,
-      "confidence": 0.742
-    }
+    "requires_human": { "noul": 0.104548343005757 }
   },
-  "usage": {
-    "prompt_tokens": 128,
-    "completion_tokens": 0,
-    "total_tokens": 128
-  }
+  "usage": { "prompt_tokens": 211, "completion_tokens": 0, "total_tokens": 211 }
 }
 ```
 
