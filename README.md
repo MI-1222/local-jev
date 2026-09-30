@@ -13,6 +13,8 @@
 [![Tier 1: 130M-INT8](https://img.shields.io/badge/Tier_1-130M--INT8_12ms-success.svg)](https://huggingface.co/MI-1222/sokuto-ja-130m-int8)
 [![Tier 2: 310M-INT8](https://img.shields.io/badge/Tier_2-310M--INT8_23ms-success.svg)](https://huggingface.co/MI-1222/sokuto-ja-310m-int8)
 
+日本語 | [English](README.en.md)
+
 </div>
 
 ---
