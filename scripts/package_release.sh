@@ -260,6 +260,7 @@ docker compose down
 \`\`\`
 EOF
 
+else
     # 配布用 Compose テンプレートの配置 (GHCR 事前ビルド済みイメージ対応)
     sed -e "s|\${SOKUTO_VERSION:-latest}|${VERSION}|g" \
         "${ROOT_DIR}/docker/docker-compose.dist.yml" > "${PACKAGE_DIR}/docker-compose.yml"
