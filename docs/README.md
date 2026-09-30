@@ -96,10 +96,10 @@ Python による学習基盤と Rust によるゼロアロケーション推論�
 Tier 1 (130M-INT8) と Tier 2 (310M-INT8) のスペック対比、JGLUE および実務タスクにおける分類精度、事後温度スケーリングによる ECE 2.61% の較正性能、CPU 単一／バッチ推論遅延の実測データを公開します。
 
 - [index.md](benchmarks/index.md): Tier 1 (130M) vs Tier 2 (310M) 完全スペック対比表、ハードウェア環境、検証プロトコル
-- [accuracy-calibration.md](benchmarks/accuracy-calibration.md): JGLUE 判定精度(Choice 90.1%, Noul 97.5%)、事後較正 ECE(2.61%)、信頼性ダイアグラム
-- [latency-throughput.md](benchmarks/latency-throughput.md): CPU 推論レイテンシ(p50 12.78ms / 23.56ms)、スループット(138 dps / 84 dps)
-- [ood-evaluation.md](benchmarks/ood-evaluation.md): 自由エネルギー OOD 検知性能(AUROC 97.6% / 80.5%、検知率 92.3%)の実測評価
-- [quantization-parity.md](benchmarks/quantization-parity.md): FP32 vs INT8 決定一致率(100.0%)、コサイン類似度(0.9993)、メモリ半減実証
+- [accuracy-calibration.md](benchmarks/accuracy-calibration.md): JGLUE 判定精度(Choice 90.09%, Noul 97.50%)、事後較正 ECE(2.61%)、信頼性ダイアグラム
+- [latency-throughput.md](benchmarks/latency-throughput.md): CPU 推論レイテンシ(p50 12.61ms / 23.28ms)、スループット(146.7 dps / 72.8 dps、Scratchpad 156.9 dps)
+- [ood-evaluation.md](benchmarks/ood-evaluation.md): 自由エネルギー OOD 検知性能(AUROC 97.63% / 80.47%、検知率 92.3%)の実測評価
+- [quantization-parity.md](benchmarks/quantization-parity.md): FP32 vs INT8 決定一致率(100.0%)、コサイン類似度(0.9993)、容量 45%〜56% 削減実証
 
 ### 5. [Training](training/index.md)(学習・量子化パイプライン編)
 

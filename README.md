@@ -106,7 +106,7 @@ flowchart TD
 | **確率較正 (ECE)**          | 過信あり ([出荷時 ECE 31.4% 〜 46.6%](https://github.com/NandhaKishorM/laya#calibration))                                                                           | **厳密適格スコア較正 (ECE 2.61%)** (信頼度と確率が完全一致)      |
 | **OOD(該当なし)検知**       | なし(Confidence Gatingによるフォールバック, プロンプトへの「該当なし」の明示 により対処)                                                                            | **ヘルムホルツ自由エネルギー安全弁** (検知率 **92.3%**)          |
 | **推論ランタイム**          | Python / PyTorch / Transformers (メモリ大)                                                                                                                          | **純 Rust (Axum + ONNX Runtime)** (ゼロアロケーション)           |
-| **ハードウェア要件**        | GPU 推論推奨 ([T4 等で 32.8ms](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#headline), CPU では低速)                                               | **CPU のみで 12.78ms (Tier 1) / 23.56ms (Tier 2)**               |
+| **ハードウェア要件**        | GPU 推論推奨 ([T4 等で 32.8ms](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#headline), CPU では低速)                                               | **CPU のみで 12.61ms (Tier 1) / 23.28ms (Tier 2)**               |
 | **コンテナ常駐メモリ**      | [5モデルロード時で 9.3 GiB](https://github.com/NandhaKishorM/laya/blob/main/BENCHMARKS.md#server-cpu-amd-epyc-9r14-4-cores-linux)                                   | **280MB (Tier 1) / 538MB (Tier 2)**                              |
 | **INT8 量子化パリティ**     | FP32 / FP16 のみ                                                                                                                                                    | **ハイブリッド動的 INT8**                                        |
 
@@ -153,14 +153,14 @@ flowchart TD
 | :--------------------- | :------------------------------------------------------ | :--------------------------------------------------- |
 | **バックボーン**       | `sbintuitions/modernbert-ja-130m`                       | `sbintuitions/modernbert-ja-310m`                    |
 | **量子化方式**         | ハイブリッド動的 INT8 (バックボーンのみ INT8)           | ハイブリッド動的 INT8 (バックボーンのみ INT8)        |
-| **モデルサイズ**       | 278.4 MB (FP32 比 44.9% 削減)                           | 538.0 MB (FP32 比 55.6% 削減)                        |
+| **モデルサイズ**       | 278.4 MB (FP32 比 44.95% 削減)                          | 537.5 MB (FP32 比 55.62% 削減)                       |
 | **Top-1 決定一致率**   | **100.0%** (FP32 と完全一致)                            | **100.0%** (FP32 と完全一致)                         |
-| **CPU 推論遅延 (p50)** | **12.78 ms** (138.4 decisions/sec)                      | **23.56 ms** (83.7 decisions/sec)                    |
+| **CPU 推論遅延 (p50)** | **12.61 ms** (ピーク 146.7 dps, Scratchpad 156.9 dps)   | **23.28 ms** (ピーク 72.8 dps)                       |
 | **コンテナ常駐 RAM**   | < 350 MB                                                | < 750 MB (1GB 制限環境下で安定稼働)                  |
-| **分類精度 (Choice)**  | 87.8%                                                   | **90.1%**                                            |
-| **真偽精度 (Noul)**    | 96.2%                                                   | **97.5%**                                            |
+| **分類精度 (Choice)**  | 87.84%                                                  | **90.09%**                                           |
+| **真偽精度 (Noul)**    | 96.20%                                                  | **97.50%**                                           |
 | **期待較正誤差 (ECE)** | 6.29%                                                   | **2.61%** (高精度較正)                               |
-| **OOD 検知率**         | 92.3% (AUROC 97.6%)                                     | 92.3% (AUROC 80.5%, ハイブリッド安全弁)              |
+| **OOD 検知率**         | 92.3% (AUROC 97.63%)                                    | 92.3% (AUROC 80.47%, ハイブリッド安全弁)             |
 | **推奨ユースケース**   | エッジ・IoT、大量イベントフィルタリング、低遅延ルーター | 複雑な規約判定、法務・金融トリアージ、高精度分類基盤 |
 
 ---
