@@ -51,7 +51,7 @@ Docker や Rust ツールチェーンのインストール、本リポジトリ�
 パッケージには実行バイナリ `bin/sokuto`、ONNX Runtime 共有ライブラリ `lib/`、モデル取得スクリプト `download_models.sh` が同梱されています(内部の rpath が設定されているため追加設定不要で即座に動作します)。
 
 ```bash
-VERSION="v0.3.6"
+VERSION="vX.Y.Z"
 ARCH="aarch64-apple-darwin" # または x86_64-unknown-linux-gnu / aarch64-unknown-linux-gnu
 
 # 1. アーカイブの取得と展開 (git clone 不要)
@@ -136,14 +136,14 @@ docker run -d --name sokuto-app \
 インターネットから完全隔離された本番環境へ持ち込むための配布アーカイブを自動生成できます(本リポジトリの clone が前提です)。
 
 ```bash
-# 配布用アーカイブを生成(dist/sokuto-v0.3.6-cpu-tier2-*.tar.gz が生成される)
+# 配布用アーカイブを生成(dist/sokuto-*-cpu-tier2.tar.gz が生成される)
 ./scripts/package_release.sh --tier tier2 --flavor cpu
 
-# 隔離サーバー上での展開とロード
-tar -xzf sokuto-v0.3.6-cpu-tier2-linux-amd64.tar.gz
-cd sokuto-v0.3.6-cpu-tier2-linux-amd64
-docker load -i sokuto-image.tar.gz
-docker compose up -d
+# 隔離サーバー上での展開と起動 (同梱の自動デプロイスクリプトを実行)
+tar -xzf sokuto-*-cpu-tier2.tar.gz
+cd sokuto-*-cpu-tier2
+./deploy.sh
+# (手動で行う場合: docker load -i sokuto-*-image.tar.gz && docker compose up -d)
 ```
 
 ---
