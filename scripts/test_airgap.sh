@@ -12,11 +12,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-IMAGE_NAME="${1:-sokuto:cpu}"
-TIER="${2:-tier2}"
+IMAGE_NAME="sokuto:cpu"
+TIER="tier2"
 MODEL_DIR=""
 
-# オプション解析
+# 引数解析 (オプション指定および位置引数に対応)
+POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --tier)
@@ -32,10 +33,19 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         *)
+            POSITIONAL_ARGS+=("$1")
             shift
             ;;
     esac
 done
+
+# 位置引数による上書き (指定がある場合)
+if [[ ${#POSITIONAL_ARGS[@]} -ge 1 ]]; then
+    IMAGE_NAME="${POSITIONAL_ARGS[0]}"
+fi
+if [[ ${#POSITIONAL_ARGS[@]} -ge 2 ]]; then
+    TIER="${POSITIONAL_ARGS[1]}"
+fi
 
 if [[ -z "${MODEL_DIR}" ]]; then
     if [[ "${TIER}" == "tier1" && -d "${ROOT_DIR}/models/quantized" ]]; then

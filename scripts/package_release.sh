@@ -260,6 +260,7 @@ docker compose down
 \`\`\`
 EOF
 
+else
     # 配布用 Compose テンプレートの配置 (GHCR 事前ビルド済みイメージ対応)
     sed -e "s|\${SOKUTO_VERSION:-latest}|${VERSION}|g" \
         "${ROOT_DIR}/docker/docker-compose.dist.yml" > "${PACKAGE_DIR}/docker-compose.yml"
@@ -356,7 +357,7 @@ fi
 
 # 7. チェックサム (SHA256) の算出
 echo "[INFO] チェックサムを生成中..."
-(cd "${PACKAGE_DIR}" && find . -maxdepth 2 -type f ! -name "SHA256SUMS" -exec shasum -a 256 {} + > SHA256SUMS)
+(cd "${PACKAGE_DIR}" && find . -type f ! -name "SHA256SUMS" -exec shasum -a 256 {} + > SHA256SUMS)
 
 # 8. パッケージ全体の tar.gz アーカイブ作成
 TARBALL_PATH="${OUTPUT_BASE_DIR}/${PACKAGE_NAME}.tar.gz"
