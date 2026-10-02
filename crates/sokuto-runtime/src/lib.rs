@@ -9,9 +9,16 @@
 
 pub use sokuto_core as core;
 
+pub mod dag;
 pub mod engine;
 pub mod error;
 pub mod tokenizer;
+
+pub use dag::{
+    DagDefinition, DagError, DagExecutionResult, DagNode, DagNodeType, InProcessDagExecutor,
+    LowLatencyResourcePool, LowLatencySessionPool, NodeCondition, NodeConditionOp, PooledResource,
+    PooledSession, StepExecutionResult, validate_dag,
+};
 
 pub use engine::{
     BatchScratchpad, CandidateEmbeddingCache, CoarseScorer, CoarseToFineConfig,

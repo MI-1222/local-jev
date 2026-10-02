@@ -616,6 +616,42 @@ impl InferenceEngine {
             &scorer,
         )
     }
+
+    /// 単一の質問をトークナイズから決定数理評価まで一括して実行し、決定結果を返却する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `question`: 質問仕様。
+    /// - `calib_config`: 較正温度設定。
+    ///
+    /// # 戻り値
+    /// 確率較正済みの `Answer`。
+    pub fn predict_single_question(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        question: &Question,
+        calib_config: &CalibrationConfig,
+    ) -> Result<Answer> {
+        let tokenized = tokenizer.encode_question(state, question)?;
+        let logits = self.forward_question(&tokenized)?;
+        let mut answer =
+            evaluate_question(question, &logits, calib_config).map_err(RuntimeError::Core)?;
+
+        let energy = calculate_choice_energy(question, &logits, calib_config);
+        apply_gating_to_answer_with_energy(
+            &mut answer,
+            energy,
+            Some(state),
+            None,
+            Some(question),
+            None,
+            calib_config,
+        );
+
+        Ok(answer)
+    }
 }
 
 /// 指定された設定とプールサイズに基づいて `SessionBuilder` を構成する内部共通ヘルパー関数。

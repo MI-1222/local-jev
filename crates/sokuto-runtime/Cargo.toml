@@ -15,6 +15,9 @@ ort = { workspace = true }
 ndarray = { workspace = true }
 tracing = { workspace = true }
 num_cpus = { workspace = true }
+tokio = { workspace = true }
+crossbeam-queue = { workspace = true }
+futures-util = { workspace = true }
 
 [features]
 default = []

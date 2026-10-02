@@ -38,3 +38,5 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 regex = "1.11"
 num_cpus = "1.16"
 mimalloc = { version = "0.1", default-features = false }
+crossbeam-queue = "0.3.14"
+futures-util = "0.3.34"
