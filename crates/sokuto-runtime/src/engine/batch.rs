@@ -16,6 +16,9 @@ use crate::engine::coarse::{
 use crate::engine::gating::{apply_gating_to_answer_with_energy, calculate_choice_energy};
 use crate::engine::session::InferenceEngine;
 use crate::error::Result;
+use crate::hierarchical::{
+    CoarseToFineRouter, HierarchicalMapping, HierarchicalResult, HierarchicalRouterConfig,
+};
 use crate::tokenizer::{BatchTokenizedQuestions, JevTokenizer};
 
 /// サーバー層との連携において推奨されるデフォルトの最大バッチチャンクサイズ。
@@ -828,5 +831,43 @@ impl InferenceEngine {
             gating_config,
             &scorer,
         )
+    }
+
+    /// 粗密二段階階層ルーティング (Coarse-to-Fine Hierarchical Routing) を用いて複数質問を一括評価する。
+    ///
+    /// 共通の階層オントロジーマッピングとルーター設定を各質問に適用し、
+    /// 大分類オントロジー、ODIR Dirichlet 較正、Soft-Beam、エントロピー連動温度較正による低遅延・高精度推論を実行する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 共通文脈テキスト。
+    /// - `questions`: 評価対象の質問群マップ。
+    /// - `mapping`: 大分類・細分類の階層オントロジー定義。
+    /// - `calib_config`: 較正温度設定。
+    /// - `config`: 階層ルーター設定。
+    /// - `gating_config`: ゲーティング閾値設定 (任意)。
+    ///
+    /// # 戻り値
+    /// 各質問キーと階層推論結果 (`HierarchicalResult`) の順序付きマップ。
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_batch_questions_hierarchical(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        questions: &IndexMap<String, Question>,
+        mapping: &HierarchicalMapping,
+        calib_config: &CalibrationConfig,
+        config: HierarchicalRouterConfig,
+        gating_config: Option<&GatingConfig>,
+    ) -> Result<IndexMap<String, HierarchicalResult>> {
+        let router = CoarseToFineRouter::new(self, tokenizer, mapping, calib_config, config)?;
+        let mut results = IndexMap::with_capacity(questions.len());
+
+        for (q_key, question) in questions {
+            let res = router.route(state, &question.instructions, gating_config)?;
+            results.insert(q_key.clone(), res);
+        }
+
+        Ok(results)
     }
 }
