@@ -68,8 +68,8 @@ def upload_tier(tier: str, tag: str | None = None, tag_only: bool = False) -> No
     api = HfApi(token=token)
 
     conf = TIER_CONFIG[tier]
-    repo_id = conf["repo_id"]
-    local_dir = conf["local_dir"]
+    repo_id = str(conf["repo_id"])
+    local_dir = Path(str(conf["local_dir"]))
 
     print(f"[*] リポジトリを確認/作成中: {repo_id}")
     create_repo(repo_id=repo_id, repo_type="model", exist_ok=True, token=token)
@@ -84,7 +84,9 @@ def upload_tier(tier: str, tag: str | None = None, tag_only: bool = False) -> No
     if not local_dir.exists():
         print(f"[WARN] モデルディレクトリが見つかりません: {local_dir}")
         if tag:
-            print(f"[*] ディレクトリ不在のため、リリースタグ {tag} の作成のみ実行します...")
+            print(
+                f"[*] ディレクトリ不在のため、リリースタグ {tag} の作成のみ実行します..."
+            )
             api.create_tag(repo_id=repo_id, tag=tag, repo_type="model")
             print(f"[✓] タグ作成完了: https://huggingface.co/{repo_id}/tree/{tag}")
         return

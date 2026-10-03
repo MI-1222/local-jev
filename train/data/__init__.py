@@ -19,6 +19,13 @@ from data.dataset import (
     pad_jev_collate_fn,
 )
 from data.formatter import format_prompt, tokenize_sample
+from data.hierarchical import HierarchicalMapping
+from data.hierarchical_dataset import (
+    HierarchicalDatasetGenerator,
+    HierarchicalJevDataset,
+    HierarchicalSamplePair,
+    hierarchical_collate_fn,
+)
 from data.negative_sampler import NEGATIVE_OPTION_POOL, SyntheticNegativeInjector
 from data.prompt_pool import sample_instruction
 from data.schema import QuestionType, UnifiedSample
@@ -29,6 +36,10 @@ __all__ = [
     "Banking77Converter",
     "BaseDatasetConverter",
     "Clinc150Converter",
+    "HierarchicalDatasetGenerator",
+    "HierarchicalJevDataset",
+    "HierarchicalMapping",
+    "HierarchicalSamplePair",
     "JevDataset",
     "JevDynamicDataset",
     "MNLIConverter",
@@ -37,6 +48,7 @@ __all__ = [
     "UnifiedDatasetBuilder",
     "UnifiedSample",
     "format_prompt",
+    "hierarchical_collate_fn",
     "jev_collate_fn",
     "pad_jev_collate_fn",
     "sample_instruction",
