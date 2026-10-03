@@ -546,3 +546,223 @@ class HierarchicalMapping:
         )
         mapping.validate()
         return mapping
+
+    @classmethod
+    def massive(cls) -> "HierarchicalMapping":
+        """MASSIVE (ja-JP) 向け 18 シナリオ・60 インテントの階層プリセットを構築する。
+
+        Amazon MASSIVE の階層構造 (scenario -> intent) に基づき、
+        18 の粗分類シナリオと 60 の細分類インテントを相互排他的かつ網羅的に定義する。
+
+        Returns:
+            HierarchicalMapping: MASSIVE プリセットインスタンス。
+        """
+        categories: list[tuple[str, str, list[tuple[str, str]]]] = [
+            (
+                "alarm",
+                "アラーム・目覚まし・タイマーの設定や確認・解除",
+                [
+                    ("alarm_set", "新しいアラームや目覚ましをセットする。"),
+                    ("alarm_query", "設定されているアラーム時刻や状態を確認する。"),
+                    ("alarm_remove", "設定済みのアラームを削除または解除する。"),
+                ],
+            ),
+            (
+                "audio",
+                "音量調整・消音・オーディオ再生制御",
+                [
+                    ("audio_volume_mute", "音声をミュート (消音) にする。"),
+                    ("audio_volume_up", "音量を上げる。"),
+                    ("audio_volume_down", "音量を下げる。"),
+                    ("audio_volume_other", "特定の音量レベルに変更する。"),
+                ],
+            ),
+            (
+                "calendar",
+                "カレンダーの予定確認・新規予定作成・予定変更",
+                [
+                    ("calendar_set", "カレンダーに新しい予定を追加・登録する。"),
+                    ("calendar_query", "登録されている予定やスケジュールを確認する。"),
+                    ("calendar_remove", "予定を削除・キャンセルする。"),
+                ],
+            ),
+            (
+                "cooking",
+                "レシピ検索・調理手順・計量や食材の質問",
+                [
+                    ("cooking_recipe", "料理のレシピや作り方・手順を検索する。"),
+                    ("cooking_query", "調理法や代替食材・分量に関する質問をする。"),
+                ],
+            ),
+            (
+                "datetime",
+                "現在日時・タイムゾーン・日付の計算や確認",
+                [
+                    ("datetime_query", "現在の日付や時刻・曜日を確認する。"),
+                    ("datetime_convert", "異なるタイムゾーン間の時差を換算する。"),
+                ],
+            ),
+            (
+                "email",
+                "メールの送受信・下書き作成・未読メール確認",
+                [
+                    ("email_sendemail", "指定した宛先へメールを送信する。"),
+                    ("email_query", "受信メールや未読メールの内容を確認する。"),
+                    ("email_querycontact", "アドレス帳や連絡先情報を検索する。"),
+                    ("email_addcontact", "新しい連絡先をアドレス帳に追加する。"),
+                ],
+            ),
+            (
+                "general",
+                "一般的な対話・挨拶・簡単な雑談応答",
+                [
+                    ("general_greet", "挨拶や声かけを行う。"),
+                    ("general_joke", "ジョークや面白い話を聞く。"),
+                    ("general_quirky", "雑談やユーモラスな質問をする。"),
+                ],
+            ),
+            (
+                "iot",
+                "スマートホーム家電や照明・スマートプラグの操作",
+                [
+                    ("iot_hue_lighton", "照明やスマートライトを点灯する。"),
+                    ("iot_hue_lightoff", "照明やスマートライトを消灯する。"),
+                    ("iot_hue_lightdim", "照明の明るさを落とす (調光)。"),
+                    ("iot_hue_lightup", "照明の明るさを上げる。"),
+                    ("iot_hue_lightchange", "照明の色や発光パターンを変更する。"),
+                    ("iot_cleaning", "ロボット掃除機の清掃を開始または停止する。"),
+                    ("iot_wemo_on", "スマートプラグや家電の電源を入れる。"),
+                    ("iot_wemo_off", "スマートプラグや家電の電源を切る。"),
+                    ("iot_coffee", "スマートコーヒーメーカーで抽出を開始する。"),
+                ],
+            ),
+            (
+                "lists",
+                "買い物リストやToDoリストのアイテム追加・削除・確認",
+                [
+                    ("lists_createoradd", "リストに新しいアイテムを追加・登録する。"),
+                    ("lists_query", "リストの内容やアイテム一覧を確認する。"),
+                    ("lists_remove", "リストからアイテムを削除する。"),
+                ],
+            ),
+            (
+                "music",
+                "音楽の再生・一時停止・曲名検索やプレイリスト操作",
+                [
+                    ("music_likeness", "再生中の曲をお気に入り登録または高評価する。"),
+                    (
+                        "music_dislikeness",
+                        "再生中の曲をスキップまたは低評価・嫌いに登録する。",
+                    ),
+                    ("music_query", "曲名やアーティスト情報・歌詞を検索する。"),
+                    ("music_settings", "音楽再生のリピートやシャッフルを設定する。"),
+                ],
+            ),
+            (
+                "news",
+                "最新ニュースやトピックスの読み上げ・検索",
+                [
+                    ("news_query", "最新のニュースや指定ジャンルの報道を確認する。"),
+                ],
+            ),
+            (
+                "play",
+                "ゲーム・雑学クイズ・ポッドキャストやラジオ再生",
+                [
+                    ("play_music", "指定した楽曲・アルバム・プレイリストを再生する。"),
+                    ("play_audiobook", "オーディオブックの朗読を再生する。"),
+                    ("play_radio", "ラジオ放送やストリーミング配信を聴く。"),
+                    ("play_game", "音声ゲームやクイズを開始する。"),
+                    ("play_podcasts", "ポッドキャスト番組を再生する。"),
+                ],
+            ),
+            (
+                "qa",
+                "事実確認・定義・人物や用語に関する一般的な質問回答",
+                [
+                    ("qa_factoid", "事実情報や定義・数値に関する質問をする。"),
+                    ("qa_definition", "単語や用語の意味・定義を調べる。"),
+                    ("qa_stock", "現在の株価や市場指標を確認する。"),
+                    ("qa_currency", "為替相場や通貨換算レートを調べる。"),
+                    ("qa_maths", "計算や単位換算の答えを求める。"),
+                ],
+            ),
+            (
+                "recommendation",
+                "飲食店・映画・観光地などのおすすめ提案",
+                [
+                    ("recommendation_events", "開催予定のイベントや催し物を検索する。"),
+                    (
+                        "recommendation_locations",
+                        "近隣の店舗や施設・おすすめスポットを探す。",
+                    ),
+                    ("recommendation_movies", "上映中の映画やおすすめ作品を探す。"),
+                ],
+            ),
+            (
+                "social",
+                "SNS投稿・ソーシャルメッセージの送信や通知確認",
+                [
+                    ("social_post", "SNS やソーシャルメディアに近況を投稿する。"),
+                    ("social_query", "SNS のタイムラインや通知を確認する。"),
+                ],
+            ),
+            (
+                "takeaway",
+                "フードデリバリー・出前・テイクアウトの注文と配達状況",
+                [
+                    ("takeaway_order", "料理のデリバリーやテイクアウトを注文する。"),
+                    ("takeaway_query", "注文した料理の配達状況や店舗情報を確認する。"),
+                ],
+            ),
+            (
+                "transport",
+                "交通案内・タクシー配車・運行情報や乗り換え検索",
+                [
+                    ("transport_taxi", "タクシーの配車や事前予約を依頼する。"),
+                    ("transport_traffic", "道路の渋滞状況や通行止め情報を調べる。"),
+                    (
+                        "transport_ticket",
+                        "電車の乗車券や航空券の空席を確認・予約する。",
+                    ),
+                    ("transport_query", "公共交通機関の時刻表や乗り換え案内を調べる。"),
+                ],
+            ),
+            (
+                "weather",
+                "現在の天気・週間天気予報・降水確率の確認",
+                [
+                    ("weather_query", "現在の天気や今後の天気予報・気温を確認する。"),
+                ],
+            ),
+        ]
+
+        coarse_categories: dict[str, str] = {}
+        fine_criteria: dict[str, str] = {}
+        coarse_to_fine: dict[str, list[str]] = {}
+        fine_to_coarse: dict[str, str] = {}
+        all_coarse_keys: list[str] = []
+        all_fine_keys: list[str] = []
+
+        for coarse_key, coarse_desc, fine_items in categories:
+            coarse_categories[coarse_key] = coarse_desc
+            all_coarse_keys.append(coarse_key)
+            coarse_to_fine[coarse_key] = []
+            for fine_key, fine_desc in fine_items:
+                fine_criteria[fine_key] = fine_desc
+                coarse_to_fine[coarse_key].append(fine_key)
+                fine_to_coarse[fine_key] = coarse_key
+                all_fine_keys.append(fine_key)
+
+        mapping = cls(
+            name="MASSIVE-ja-JP-18-60",
+            coarse_categories=coarse_categories,
+            fine_criteria=fine_criteria,
+            coarse_to_fine=coarse_to_fine,
+            fine_to_coarse=fine_to_coarse,
+            all_coarse_keys=all_coarse_keys,
+            all_fine_keys=all_fine_keys,
+            negative_keys=list(DEFAULT_NEGATIVE_KEYS),
+        )
+        mapping.validate()
+        return mapping

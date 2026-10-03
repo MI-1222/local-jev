@@ -1,0 +1,342 @@
+{
+  "domain": "banking_fee",
+  "policy_description": "【送金手数料規約】\n1. 通常会員の送金手数料は一律220円。\n2. プラチナ会員は国内送金が月5回まで無料。6回目以降は通常手数料220円。\n3. 海外送金は会員ランクに関わらず固定1,100円の手数料が発生する（国内無料枠の対象外）。\n4. 特別例外: グローバルキャンペーン適用期間中は、海外送金手数料が550円（半額）となる。",
+  "dag_definition": {
+    "version": "1.0",
+    "dag_id": "banking_fee_evaluation_dag",
+    "entry_node": "check_is_overseas",
+    "timeout_ms": 300,
+    "nodes": {
+      "check_is_overseas": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "この送金は海外送金または外貨建て送金ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "check_overseas_campaign"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "check_is_platinum"
+          }
+        ]
+      },
+      "check_overseas_campaign": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "グローバルキャンペーン適用中、またはキャンペーン特典を利用した送金ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_campaign_overseas_fee"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_standard_overseas_fee"
+          }
+        ]
+      },
+      "check_is_platinum": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "送金依頼者はプラチナ会員ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "check_within_monthly_quota"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_normal_fee"
+          }
+        ]
+      },
+      "check_within_monthly_quota": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "今月の送金回数は無料枠の上限 (月5回) 以内ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_free"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_normal_fee"
+          }
+        ]
+      },
+      "decision_free": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "手数料決定ノード",
+          "criteria": {
+            "free": "送金手数料無料"
+          }
+        },
+        "conditions": []
+      },
+      "decision_normal_fee": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "手数料決定ノード",
+          "criteria": {
+            "normal_fee": "通常送金手数料220円"
+          }
+        },
+        "conditions": []
+      },
+      "decision_standard_overseas_fee": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "手数料決定ノード",
+          "criteria": {
+            "overseas_fee": "海外送金手数料1100円"
+          }
+        },
+        "conditions": []
+      },
+      "decision_campaign_overseas_fee": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "手数料決定ノード",
+          "criteria": {
+            "campaign_overseas_fee": "キャンペーン海外送金手数料550円"
+          }
+        },
+        "conditions": []
+      }
+    }
+  },
+  "pairs": [
+    {
+      "id": "bank_fee_01",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員です。国内の家族口座へ3万円を送金したいのですが、今月の送金はこれが初めてです。手数料はかかりますか？",
+      "expected_base": "free",
+      "cf_state": "プラチナ会員です。米国の家族口座へ3万円を送金したいのですが、今月の送金はこれが初めてです。手数料はかかりますか？",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "domestic_to_overseas",
+      "notes": "プラチナ会員の国内無料特典が海外送金例外条項により無効化される対照ペア。"
+    },
+    {
+      "id": "bank_fee_02",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員資格を保有しており、今月4回目の国内振込を予定しています。手数料は発生しますか？",
+      "expected_base": "free",
+      "cf_state": "プラチナ会員資格を保有しており、今月6回目の国内振込を予定しています。手数料は発生しますか？",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "monthly_quota_exceeded",
+      "notes": "月5回の上限境界値 (4回目 vs 6回目) による反転テスト。"
+    },
+    {
+      "id": "bank_fee_03",
+      "domain": "banking_fee",
+      "base_state": "通常会員ですが、春のグローバルキャンペーン期間中に海外口座への送金手続きを行います。手数料はいくらですか？",
+      "expected_base": "campaign_overseas_fee",
+      "cf_state": "通常会員ですが、キャンペーン対象外の期間中に海外口座への送金手続きを行います。手数料はいくらですか？",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "campaign_applied_vs_not",
+      "notes": "海外送金におけるキャンペーン適用の有無による手数料半額反転。"
+    },
+    {
+      "id": "bank_fee_04",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員として国内の提携銀行口座へ初回振込を実行します。",
+      "expected_base": "free",
+      "cf_state": "一般の通常会員として国内の提携銀行口座へ初回振込を実行します。",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "platinum_vs_regular_member",
+      "notes": "国内初回送金における会員ランク属性のみの最小編集。"
+    },
+    {
+      "id": "bank_fee_05",
+      "domain": "banking_fee",
+      "base_state": "海外留学中の息子への送金ですが、現在開催中の春のグローバルキャンペーンを適用して振り込みます。",
+      "expected_base": "campaign_overseas_fee",
+      "cf_state": "海外留学中の息子への送金ですが、通常期間中に標準レートで振り込みます。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "campaign_active_vs_standard",
+      "notes": "海外送金時のキャンペーン適用ワードによる反転。"
+    },
+    {
+      "id": "bank_fee_06",
+      "domain": "banking_fee",
+      "base_state": "プラチナランク会員で、今月の国内振込はこれでちょうど5回目となります。",
+      "expected_base": "free",
+      "cf_state": "プラチナランク会員で、今月の国内振込はこれで累計7回目となります。",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "quota_boundary_5_vs_7",
+      "notes": "無料枠上限5回境界値テスト。"
+    },
+    {
+      "id": "bank_fee_07",
+      "domain": "banking_fee",
+      "base_state": "最高位プラチナ会員です。国内の友人への送金で今月は2回目となります。",
+      "expected_base": "free",
+      "cf_state": "最高位プラチナ会員です。英国ロンドンの現地口座への送金で今月は2回目となります。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "domestic_vs_london_overseas",
+      "notes": "プラチナの強い肯定語句がある中での送金先海外化。"
+    },
+    {
+      "id": "bank_fee_08",
+      "domain": "banking_fee",
+      "base_state": "通常会員として春のグローバルキャンペーンを利用し、シンガポール支店へ送金します。",
+      "expected_base": "campaign_overseas_fee",
+      "cf_state": "通常会員としてキャンペーン適用なしで、シンガポール支店へ送金します。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "singapore_campaign_flag",
+      "notes": "特定国宛送金におけるキャンペーン有無の最小反転。"
+    },
+    {
+      "id": "bank_fee_09",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員です。今月国内3回目の振込なので手数料無料が適用されますか？",
+      "expected_base": "free",
+      "cf_state": "レギュラー通常会員です。今月国内3回目の振込なので手数料無料が適用されますか？",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "membership_tier_change",
+      "notes": "会員属性の反転による手数料要否。"
+    },
+    {
+      "id": "bank_fee_10",
+      "domain": "banking_fee",
+      "base_state": "フランスの取引先口座へ送金希望ですが、春のグローバルキャンペーンコードを入力済みです。",
+      "expected_base": "campaign_overseas_fee",
+      "cf_state": "フランスの取引先口座へ送金希望ですが、キャンペーンコードは未入力のままです。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "coupon_entered_vs_empty",
+      "notes": "コード入力状態による半額判定の反転。"
+    },
+    {
+      "id": "bank_fee_11",
+      "domain": "banking_fee",
+      "base_state": "当月まだ1度も送金していないプラチナ会員です。国内振込を手続きします。",
+      "expected_base": "free",
+      "cf_state": "当月すでに8回送金済みのプラチナ会員です。国内振込を手続きします。",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "usage_count_0_vs_8",
+      "notes": "国内送金の回数枠超過テスト。"
+    },
+    {
+      "id": "bank_fee_12",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員として国内送金を今月初めて行います。",
+      "expected_base": "free",
+      "cf_state": "プラチナ会員として海外電信送金を今月初めて行います。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "domestic_vs_overseas_wire",
+      "notes": "送金種類の国内と海外電信の単語反転。"
+    },
+    {
+      "id": "bank_fee_13",
+      "domain": "banking_fee",
+      "base_state": "グローバル送金キャンペーンが有効な状態で、カナダ宛に外貨送金を行います。",
+      "expected_base": "campaign_overseas_fee",
+      "cf_state": "グローバル送金キャンペーンが終了した状態で、カナダ宛に外貨送金を行います。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "campaign_active_vs_expired",
+      "notes": "キャンペーン有効期限の反転。"
+    },
+    {
+      "id": "bank_fee_14",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員特典の送金無料枠を使って国内口座へ送金します（今月2回目）。",
+      "expected_base": "free",
+      "cf_state": "通常会員として特典枠なしで国内口座へ送金します（今月2回目）。",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "benefit_status_regular",
+      "notes": "通常会員での枠なし送金。"
+    },
+    {
+      "id": "bank_fee_15",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員です。今月国内へ送金するのはこれが3回目です。",
+      "expected_base": "free",
+      "cf_state": "プラチナ会員です。今月国内へ送金するのはこれが9回目です。",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "count_3_vs_9",
+      "notes": "数値境界値反転。"
+    },
+    {
+      "id": "bank_fee_16",
+      "domain": "banking_fee",
+      "base_state": "春のグローバルキャンペーン適用のオーストラリア宛送金を申し込みます。",
+      "expected_base": "campaign_overseas_fee",
+      "cf_state": "通常レート適用のオーストラリア宛送金を申し込みます。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "campaign_vs_standard_rate",
+      "notes": "適用レートの最小反転。"
+    },
+    {
+      "id": "bank_fee_17",
+      "domain": "banking_fee",
+      "base_state": "プラチナ会員のアカウントから国内家賃の振込（今月1回目）を行います。",
+      "expected_base": "free",
+      "cf_state": "プラチナ会員のアカウントから海外家賃の振込（今月1回目）を行います。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "rent_domestic_vs_overseas",
+      "notes": "家賃振込の国内/海外反転。"
+    },
+    {
+      "id": "bank_fee_18",
+      "domain": "banking_fee",
+      "base_state": "プレミアムプラチナ会員です。国内への送金は今月まだ上限に達していません。",
+      "expected_base": "free",
+      "cf_state": "一般通常会員です。国内への送金は今月まだ上限に達していません。",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "membership_tier_change_2",
+      "notes": "一般会員にはそもそも無料枠が存在しないことの確認。"
+    },
+    {
+      "id": "bank_fee_19",
+      "domain": "banking_fee",
+      "base_state": "海外送金サービスで春のグローバルキャンペーン割引を適用して送金したいです。",
+      "expected_base": "campaign_overseas_fee",
+      "cf_state": "海外送金サービスで割引なしの標準手数料で送金したいです。",
+      "expected_cf": "overseas_fee",
+      "flipped_factor": "discount_vs_none",
+      "notes": "割引適用の有無。"
+    },
+    {
+      "id": "bank_fee_20",
+      "domain": "banking_fee",
+      "base_state": "プラチナカード会員です。国内口座宛てに今月4度目の振り込みを実行します。",
+      "expected_base": "free",
+      "cf_state": "プラチナカード会員です。国内口座宛てに今月10度目の振り込みを実行します。",
+      "expected_cf": "normal_fee",
+      "flipped_factor": "count_4_vs_10",
+      "notes": "4度目 vs 10度目の明確な上限反転。"
+    }
+  ]
+}
