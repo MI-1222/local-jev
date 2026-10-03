@@ -1,0 +1,341 @@
+{
+  "domain": "security_triage",
+  "policy_description": "【アクセス制御・セキュリティトリアージ規約】\n1. 社内ネットワークからの一般アクセス申請は即時承認。\n2. 特権管理者（Admin）昇格申請は、多要素認証（MFA）完了時のみ承認。MFA未完了は却下。\n3. 外部ネットワークからの接続は、事前承認端末かつMFA完了の場合のみ承認。それ以外は却下。\n4. 最優先例外: 高度セキュリティ警戒アラート（Level High）発令中は、特権申請および外部アクセスを無条件遮断・却下。",
+  "dag_definition": {
+    "version": "1.0",
+    "dag_id": "security_triage_evaluation_dag",
+    "entry_node": "check_incident_alert",
+    "timeout_ms": 300,
+    "nodes": {
+      "check_incident_alert": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "現在、全社的な高度セキュリティ警戒アラートまたはインシデント緊急対応が発令中ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_denied"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "check_external_network"
+          }
+        ]
+      },
+      "check_external_network": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "接続元は社外ネットワーク、公衆Wi-Fi、またはVPN未接続の外部環境ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "check_external_auth_device"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "check_admin_elevation"
+          }
+        ]
+      },
+      "check_external_auth_device": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "事前認証済みの会社支給端末を使用し、かつ多要素認証 (MFA) の検証が成功していますか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_approved"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_denied"
+          }
+        ]
+      },
+      "check_admin_elevation": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "root権限やドメイン管理者など特権管理者への権限昇格申請ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "check_mfa_completed"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_approved"
+          }
+        ]
+      },
+      "check_mfa_completed": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "ハードウェアキーや生体認証による多要素認証 (MFA) の確認が完了していますか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_approved"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_denied"
+          }
+        ]
+      },
+      "decision_approved": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "アクセス判定結果",
+          "criteria": {
+            "approved": "アクセスを承認する。"
+          }
+        },
+        "conditions": []
+      },
+      "decision_denied": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "アクセス判定結果",
+          "criteria": {
+            "denied": "セキュリティ規約に基づきアクセスを遮断・却下する。"
+          }
+        },
+        "conditions": []
+      }
+    }
+  },
+  "pairs": [
+    {
+      "id": "sec_triage_01",
+      "domain": "security_triage",
+      "base_state": "社内執務室のLANから一般開発環境へのアクセスを申請します。通常業務の範囲内です。",
+      "expected_base": "approved",
+      "cf_state": "自宅の公衆Wi-Fi環境から一般開発環境へのアクセスを申請します。未登録の私用端末です。",
+      "expected_cf": "denied",
+      "flipped_factor": "internal_lan_vs_unauthorized_external",
+      "notes": "社内LANと未登録外部Wi-Fiの反転。"
+    },
+    {
+      "id": "sec_triage_02",
+      "domain": "security_triage",
+      "base_state": "通常運用中、社内ネットワークからDB管理者への昇格申請です。ハードウェアキーでのMFA認証完了済みです。",
+      "expected_base": "approved",
+      "cf_state": "高度セキュリティ警戒アラート発令中、社内ネットワークからDB管理者への昇格申請です。ハードウェアキーでのMFA認証完了済みです。",
+      "expected_cf": "denied",
+      "flipped_factor": "alert_active_exception",
+      "notes": "MFA完了済み管理者昇格でもアラート発令による最優先遮断。"
+    },
+    {
+      "id": "sec_triage_03",
+      "domain": "security_triage",
+      "base_state": "社内ネットワークからのroot権限昇格申請で、生体認証MFAの通過を確認しました。",
+      "expected_base": "approved",
+      "cf_state": "社内ネットワークからのroot権限昇格申請で、MFA認証は未設定のままパスワードのみです。",
+      "expected_cf": "denied",
+      "flipped_factor": "mfa_verified_vs_password_only",
+      "notes": "特権昇格におけるMFA有無の対比。"
+    },
+    {
+      "id": "sec_triage_04",
+      "domain": "security_triage",
+      "base_state": "会社支給ノートPCから社外VPN経由でアクセス申請。FIDO2セキュリティキーでMFA認証済みです。",
+      "expected_base": "approved",
+      "cf_state": "個人所有の私用PCから社外VPN経由でアクセス申請。FIDO2セキュリティキーでMFA認証済みです。",
+      "expected_cf": "denied",
+      "flipped_factor": "company_device_vs_personal_device",
+      "notes": "MFA済み外部アクセスにおける支給端末と私用端末の違い。"
+    },
+    {
+      "id": "sec_triage_05",
+      "domain": "security_triage",
+      "base_state": "オフィス内デスクより、通常のドキュメント共有フォルダへの閲覧権限を申請します。",
+      "expected_base": "approved",
+      "cf_state": "オフィス内デスクより、本番サーバーのドメイン管理者権限への昇格を申請（MFA未実施）。",
+      "expected_cf": "denied",
+      "flipped_factor": "normal_read_vs_admin_no_mfa",
+      "notes": "一般閲覧権限とMFA未実施特権の反転。"
+    },
+    {
+      "id": "sec_triage_06",
+      "domain": "security_triage",
+      "base_state": "通常警戒レベル期間中、承認済み端末からMFA認証を通過して外部クラウド管理画面に接続します。",
+      "expected_base": "approved",
+      "cf_state": "高度セキュリティ警戒アラート発令中、承認済み端末からMFA認証を通過して外部クラウド管理画面に接続します。",
+      "expected_cf": "denied",
+      "flipped_factor": "emergency_alert_lockdown",
+      "notes": "正規外部アクセスのアラート時ロックダウン。"
+    },
+    {
+      "id": "sec_triage_07",
+      "domain": "security_triage",
+      "base_state": "社内有線LAN接続の端末から、社内イントラポータルへのアクセスを行います。",
+      "expected_base": "approved",
+      "cf_state": "空港の無料Wi-Fi接続の端末から、社内イントラポータルへのアクセスを行います（MFA未認証）。",
+      "expected_cf": "denied",
+      "flipped_factor": "wired_lan_vs_airport_wifi_no_mfa",
+      "notes": "社内有線と空港公衆Wi-Fiの反転。"
+    },
+    {
+      "id": "sec_triage_08",
+      "domain": "security_triage",
+      "base_state": "インフラエンジニアによる特権コマンド実行申請。ワンタイムパスワードMFA検証に成功しました。",
+      "expected_base": "approved",
+      "cf_state": "インフラエンジニアによる特権コマンド実行申請。ワンタイムパスワードMFA検証はスキップされました。",
+      "expected_cf": "denied",
+      "flipped_factor": "mfa_success_vs_skipped",
+      "notes": "MFA検証成功とスキップ。"
+    },
+    {
+      "id": "sec_triage_09",
+      "domain": "security_triage",
+      "base_state": "社内PCからの一般的な社内チャットツールへのログインリクエストです。",
+      "expected_base": "approved",
+      "cf_state": "社外カフェのPCからの一般的な社内チャットツールへの未承認端末ログインリクエストです。",
+      "expected_cf": "denied",
+      "flipped_factor": "internal_vs_cafe_external_device",
+      "notes": "端末認証ステータスの差。"
+    },
+    {
+      "id": "sec_triage_10",
+      "domain": "security_triage",
+      "base_state": "通常状態の社内NWにおいて、監査担当者がログ閲覧のためのAdmin特権昇格（MFA承認済）を実施。",
+      "expected_base": "approved",
+      "cf_state": "高度インシデント警戒アラート中の社内NWにおいて、監査担当者がログ閲覧のためのAdmin特権昇格（MFA承認済）を実施。",
+      "expected_cf": "denied",
+      "flipped_factor": "incident_alert_admin_freeze",
+      "notes": "緊急アラート下での特権凍結。"
+    },
+    {
+      "id": "sec_triage_11",
+      "domain": "security_triage",
+      "base_state": "社内イントラネットからの一般的なナレッジベース検索クエリの発行申請です。",
+      "expected_base": "approved",
+      "cf_state": "未承認モバイル回線からの一般的なナレッジベース検索クエリの発行申請です（MFA未実施）。",
+      "expected_cf": "denied",
+      "flipped_factor": "intranet_vs_unapproved_mobile",
+      "notes": "外部未承認モバイル回線の遮断。"
+    },
+    {
+      "id": "sec_triage_12",
+      "domain": "security_triage",
+      "base_state": "社内自席からクラウド本番DBのスキーマ変更特権を申請、指紋生体MFA認証に合格。",
+      "expected_base": "approved",
+      "cf_state": "社内自席からクラウド本番DBのスキーマ変更特権を申請、指紋生体MFA認証は未登録。",
+      "expected_cf": "denied",
+      "flipped_factor": "biometric_mfa_pass_vs_unregistered",
+      "notes": "生体MFA登録有無。"
+    },
+    {
+      "id": "sec_triage_13",
+      "domain": "security_triage",
+      "base_state": "平時運用中、登録済みリモートワーク端末からプッシュ通知MFAで社内システムへ接続。",
+      "expected_base": "approved",
+      "cf_state": "高度セキュリティ警戒アラート発令中、登録済みリモートワーク端末からプッシュ通知MFAで社内システムへ接続。",
+      "expected_cf": "denied",
+      "flipped_factor": "remote_work_lockdown_during_alert",
+      "notes": "警戒発令時のリモートワークアクセス遮断。"
+    },
+    {
+      "id": "sec_triage_14",
+      "domain": "security_triage",
+      "base_state": "社内LAN接続のテスト環境サーバーへの通常デプロイ実行リクエストです。",
+      "expected_base": "approved",
+      "cf_state": "未認証の海外プロキシ経由でのテスト環境サーバーへの通常デプロイ実行リクエストです。",
+      "expected_cf": "denied",
+      "flipped_factor": "internal_lan_vs_foreign_proxy",
+      "notes": "海外プロキシ経由の拒絶。"
+    },
+    {
+      "id": "sec_triage_15",
+      "domain": "security_triage",
+      "base_state": "社内会議室からリードエンジニアが緊急パッチ適用のための特権を申請（スマホMFA承認済み）。",
+      "expected_base": "approved",
+      "cf_state": "社内会議室からリードエンジニアが緊急パッチ適用のための特権を申請（スマホMFA未承認）。",
+      "expected_cf": "denied",
+      "flipped_factor": "patch_mfa_approved_vs_pending",
+      "notes": "緊急パッチでもMFA未承認は却下。"
+    },
+    {
+      "id": "sec_triage_16",
+      "domain": "security_triage",
+      "base_state": "事前登録された役員専用タブレットからMFAパスコードを入力して社外から業績ダッシュボードを閲覧。",
+      "expected_base": "approved",
+      "cf_state": "未登録の役員私用タブレットからMFAなしで社外から業績ダッシュボードを閲覧。",
+      "expected_cf": "denied",
+      "flipped_factor": "registered_tablet_mfa_vs_private",
+      "notes": "役員私用タブレットのMFAなし拒絶。"
+    },
+    {
+      "id": "sec_triage_17",
+      "domain": "security_triage",
+      "base_state": "社内環境での一般ユーザーアカウントのパスワード定期変更手続きです。",
+      "expected_base": "approved",
+      "cf_state": "外部未知IPアドレスからの一般ユーザーアカウントのパスワード強制初期化申請です。",
+      "expected_cf": "denied",
+      "flipped_factor": "internal_routine_vs_external_unknown_ip",
+      "notes": "未知IPからの初期化申請の遮断。"
+    },
+    {
+      "id": "sec_triage_18",
+      "domain": "security_triage",
+      "base_state": "平時において、認定端末から認証アプリのMFAコードを入力して海外出張先からメール確認。",
+      "expected_base": "approved",
+      "cf_state": "高度セキュリティインシデント発生中につき、認定端末から認証アプリのMFAコードを入力して海外出張先からメール確認。",
+      "expected_cf": "denied",
+      "flipped_factor": "incident_lockout_business_trip",
+      "notes": "出張先アクセスのインシデント時遮断。"
+    },
+    {
+      "id": "sec_triage_19",
+      "domain": "security_triage",
+      "base_state": "社内検証環境へのリードオンリーアクセス申請です。",
+      "expected_base": "approved",
+      "cf_state": "社内検証環境の管理者フルコントロール権限への昇格申請（二要素認証なし）。",
+      "expected_cf": "denied",
+      "flipped_factor": "readonly_vs_full_admin_no_2fa",
+      "notes": "リードオンリーと2FAなし管理者の対比。"
+    },
+    {
+      "id": "sec_triage_20",
+      "domain": "security_triage",
+      "base_state": "社内端末からセキュリティチームのメンバーが通常監視ツールを起動。",
+      "expected_base": "approved",
+      "cf_state": "外部ネットワークからセキュリティチームのメンバーが未承認デバイスで通常監視ツールを起動。",
+      "expected_cf": "denied",
+      "flipped_factor": "internal_vs_external_unapproved_device",
+      "notes": "未承認デバイス起動の遮断。"
+    }
+  ]
+}

@@ -11,10 +11,12 @@ use axum::response::IntoResponse;
 use serde_json::Value;
 use sokuto_core::gating::evaluate_response_routing;
 use sokuto_core::schema::{QuestionType, SystemOneRequest, SystemOneResponse, Usage};
+use sokuto_runtime::hierarchical::CoarseToFineRouter;
 
 use crate::error::{ErrorResponse, ServerError};
 use crate::metrics::{
-    record_confidence, record_gating_route, record_http_duration, record_http_request,
+    record_confidence, record_gating_route, record_hierarchical_early_exit,
+    record_hierarchical_soft_beam, record_http_duration, record_http_request,
     record_inference_metrics, record_question_type,
 };
 use crate::state::AppState;
@@ -76,6 +78,9 @@ pub async fn system_one_handler(
     let chunk_size = state.chunk_size;
     let questions = req.questions;
     let gating_config = req.gating.unwrap_or_else(|| state.gating_config.clone());
+    let auto_hierarchical = req.auto_hierarchical.unwrap_or(state.auto_hierarchical);
+    let hierarchical_mapping = state.hierarchical_mapping.clone();
+    let hierarchical_config = state.hierarchical_config.clone();
 
     let inference_start = Instant::now();
     let (answers, prompt_tokens, routing_summary, route_records) =
@@ -105,16 +110,99 @@ pub async fn system_one_handler(
                 .sum();
             let total_prompt_tokens = state_tokens + questions_tokens;
 
-            // 粗密 2 段階探索とマイクロバッチチャンキングを統合した推論を実行 (ゲーティング判定も透過適用)
-            let mut answers = engine.evaluate_batch_questions_coarse_to_fine_chunked_with_gating(
-                &tokenizer,
-                &state_text,
-                &questions,
-                &calib_config,
-                &coarse_config,
-                chunk_size,
-                Some(&gating_config),
-            )?;
+            // 透過的粗密ルーティング対象質問の有無を判定 (マッピング適合性および候補数閾値ガード)
+            let has_hierarchical_target = if let Some(ref mapping) = hierarchical_mapping {
+                questions.values().any(|q| {
+                    q.question_type == QuestionType::Choice
+                        && q.criteria
+                            .as_ref()
+                            .and_then(|c| c.as_map())
+                            .map(|m| {
+                                let k = m.len();
+                                (auto_hierarchical && k > 8 || k > 16)
+                                    && m.keys().any(|key| mapping.fine_to_coarse.contains_key(key))
+                            })
+                            .unwrap_or(false)
+                })
+            } else {
+                false
+            };
+
+            let mut answers = if has_hierarchical_target {
+                let mapping = hierarchical_mapping
+                    .as_ref()
+                    .expect("マッピングが存在すること。");
+                let router = CoarseToFineRouter::new(
+                    &engine,
+                    &tokenizer,
+                    mapping.as_ref(),
+                    &calib_config,
+                    hierarchical_config,
+                )?;
+
+                let mut combined_answers = indexmap::IndexMap::with_capacity(questions.len());
+                let mut fallback_questions = indexmap::IndexMap::new();
+
+                for (qid, question) in &questions {
+                    let is_hierarchical = question.question_type == QuestionType::Choice
+                        && question
+                            .criteria
+                            .as_ref()
+                            .and_then(|c| c.as_map())
+                            .map(|m| {
+                                let k = m.len();
+                                (auto_hierarchical && k > 8 || k > 16)
+                                    && m.keys().any(|key| mapping.fine_to_coarse.contains_key(key))
+                            })
+                            .unwrap_or(false);
+
+                    if is_hierarchical {
+                        let res = router.route(
+                            &state_text,
+                            &question.instructions,
+                            Some(&gating_config),
+                        )?;
+                        if res.trace().soft_beam_triggered {
+                            record_hierarchical_soft_beam();
+                        }
+                        if res.trace().early_exit_triggered {
+                            record_hierarchical_early_exit();
+                        }
+                        combined_answers.insert(qid.clone(), res.into_answer());
+                    } else {
+                        fallback_questions.insert(qid.clone(), question.clone());
+                    }
+                }
+
+                if !fallback_questions.is_empty() {
+                    let fallback_answers = engine
+                        .evaluate_batch_questions_coarse_to_fine_chunked_with_gating(
+                            &tokenizer,
+                            &state_text,
+                            &fallback_questions,
+                            &calib_config,
+                            &coarse_config,
+                            chunk_size,
+                            Some(&gating_config),
+                        )?;
+                    for (qid, answer) in fallback_answers {
+                        combined_answers.insert(qid, answer);
+                    }
+                }
+
+                combined_answers
+            } else {
+                // 粗密 2 段階探索とマイクロバッチチャンキングを統合した通常推論を実行
+                engine.evaluate_batch_questions_coarse_to_fine_chunked_with_gating(
+                    &tokenizer,
+                    &state_text,
+                    &questions,
+                    &calib_config,
+                    &coarse_config,
+                    chunk_size,
+                    Some(&gating_config),
+                )?
+            };
 
             // 後処理ガードレール (二峰性分布検出による安全弁降格、および元ラベルキー復元) の適用
             guardrail_pipeline.post_process(&mut answers, &original_questions);

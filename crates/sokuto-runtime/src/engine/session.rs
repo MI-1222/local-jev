@@ -27,6 +27,9 @@ use crate::engine::config::{ExecutionProvider, SessionConfig, auto_intra_threads
 use crate::engine::gating::{apply_gating_to_answer_with_energy, calculate_choice_energy};
 use crate::engine::provider::register_execution_providers;
 use crate::error::{Result, RuntimeError};
+use crate::hierarchical::{
+    CoarseToFineRouter, HierarchicalMapping, HierarchicalResult, HierarchicalRouterConfig,
+};
 use crate::tokenizer::{JevTokenizer, TokenizedQuestion};
 
 /// スレッドセーフな ONNX Runtime 推論エンジン。
@@ -615,6 +618,94 @@ impl InferenceEngine {
             gating_config,
             &scorer,
         )
+    }
+
+    /// 粗密二段階階層ルーティング (Coarse-to-Fine Hierarchical Routing) により単一質問を評価する。
+    ///
+    /// 大分類オントロジーと Soft-Beam、大分類エントロピー連動温度調整を活用し、
+    /// 高基数分類 ($K > 20 \sim 30$) においても高精度かつ低遅延に決定を出力する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `instructions`: 質問指示文。
+    /// - `mapping`: 大分類と細分類のオントロジー階層マッピング。
+    /// - `calib_config`: 較正温度設定。
+    /// - `config`: 階層ルーター設定 (Soft-Beam, Early-Exit 閾値など)。
+    /// - `gating_config`: ゲーティング閾値設定 (任意)。
+    ///
+    /// # 戻り値
+    /// 階層推論結果 (`HierarchicalResult`)。
+    #[allow(clippy::too_many_arguments)]
+    pub fn evaluate_question_hierarchical(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        instructions: &str,
+        mapping: &HierarchicalMapping,
+        calib_config: &CalibrationConfig,
+        config: HierarchicalRouterConfig,
+        gating_config: Option<&GatingConfig>,
+    ) -> Result<HierarchicalResult> {
+        let router = CoarseToFineRouter::new(self, tokenizer, mapping, calib_config, config)?;
+        router.route(state, instructions, gating_config)
+    }
+
+    /// 単一の質問をトークナイズして生ロジット配列 (Softmax 正規化前) を算出する。
+    ///
+    /// 粗密推論における第 2 パス動的温度適用や、独自の後処理を行うために使用する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `question`: 質問仕様。
+    ///
+    /// # 戻り値
+    /// 各選択肢の未正規化生ロジット列 (`Vec<f64>`)。
+    pub fn forward_question_raw(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        question: &Question,
+    ) -> Result<Vec<f64>> {
+        let tokenized = tokenizer.encode_question(state, question)?;
+        self.forward_question(&tokenized)
+    }
+
+    /// 単一の質問をトークナイズから決定数理評価まで一括して実行し、決定結果を返却する。
+    ///
+    /// # 引数
+    /// - `tokenizer`: Jev 高速トークナイザー。
+    /// - `state`: 文脈テキスト。
+    /// - `question`: 質問仕様。
+    /// - `calib_config`: 較正温度設定。
+    ///
+    /// # 戻り値
+    /// 確率較正済みの `Answer`。
+    pub fn predict_single_question(
+        &self,
+        tokenizer: &JevTokenizer,
+        state: &str,
+        question: &Question,
+        calib_config: &CalibrationConfig,
+    ) -> Result<Answer> {
+        let tokenized = tokenizer.encode_question(state, question)?;
+        let logits = self.forward_question(&tokenized)?;
+        let mut answer =
+            evaluate_question(question, &logits, calib_config).map_err(RuntimeError::Core)?;
+
+        let energy = calculate_choice_energy(question, &logits, calib_config);
+        apply_gating_to_answer_with_energy(
+            &mut answer,
+            energy,
+            Some(state),
+            None,
+            Some(question),
+            None,
+            calib_config,
+        );
+
+        Ok(answer)
     }
 }
 

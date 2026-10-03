@@ -221,6 +221,10 @@ pub struct SystemOneRequest {
     /// 確信度ゲーティング処理の設定パラメータ(任意)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gating: Option<GatingConfig>,
+
+    /// 候補数 K > 16 の Choice 質問に対する透過的粗密階層ルーティングの制御フラグ(任意)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_hierarchical: Option<bool>,
 }
 
 impl SystemOneRequest {
@@ -231,6 +235,7 @@ impl SystemOneRequest {
             state: state.into(),
             questions,
             gating: None,
+            auto_hierarchical: None,
         }
     }
 
@@ -245,7 +250,14 @@ impl SystemOneRequest {
             state: state.into(),
             questions,
             gating: None,
+            auto_hierarchical: None,
         }
+    }
+
+    /// 透過的粗密階層ルーティングの有効/無効を指定してリクエストを作成する。
+    pub fn with_auto_hierarchical(mut self, auto_hierarchical: bool) -> Self {
+        self.auto_hierarchical = Some(auto_hierarchical);
+        self
     }
 
     /// ゲーティング設定を指定してリクエストを作成する。

@@ -12,6 +12,7 @@ from data.converters.jglue_jcommonsenseqa import JGlueJCommonsenseQAConverter
 from data.converters.jglue_jnli import JGlueJNLIConverter
 from data.converters.jglue_jsts import JGlueJSTSConverter
 from data.converters.jglue_marc_ja import JGlueMarcJaConverter
+from data.converters.massive import MASSIVEConverter, build_massive_hierarchical_mapping
 from data.converters.mnli import MNLIConverter
 from data.converters.sst5 import SST5Converter
 from data.converters.synthetic import SyntheticDatasetConverter
@@ -25,7 +26,9 @@ __all__ = [
     "JGlueJNLIConverter",
     "JGlueJSTSConverter",
     "JGlueMarcJaConverter",
+    "MASSIVEConverter",
     "MNLIConverter",
     "SST5Converter",
     "SyntheticDatasetConverter",
+    "build_massive_hierarchical_mapping",
 ]

@@ -1,0 +1,320 @@
+{
+  "domain": "ec_return",
+  "policy_description": "【EC返品規約】\n1. 原則として、商品到着後30日以内であり、かつ未開封である場合は返品可能。\n2. 開封済みであっても、初期不良（動作不良・破損等）が認められる場合は例外的に返品可能。\n3. 初期不良のない開封済み商品、および到着後30日を超過した商品は返品不可。\n4. 最優先例外: クリアランスセール対象品およびアウトレット品は、理由の如何を問わず返品不可。",
+  "dag_definition": {
+    "version": "1.0",
+    "dag_id": "ec_return_evaluation_dag",
+    "entry_node": "check_clearance_sale",
+    "timeout_ms": 300,
+    "nodes": {
+      "check_clearance_sale": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "購入した商品はクリアランスセール品、アウトレット品、または特別割引セール品ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_ineligible"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "check_within_30days"
+          }
+        ]
+      },
+      "check_within_30days": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "商品到着後または購入後30日以内ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_ineligible"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "check_package_unopened"
+          }
+        ]
+      },
+      "check_package_unopened": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "商品は外箱やパッケージを含め未開封・未使用の状態ですか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_eligible"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "check_initial_defect"
+          }
+        ]
+      },
+      "check_initial_defect": {
+        "node_type": "inference",
+        "question": {
+          "type": "noul",
+          "instructions": "届いた商品に初期不良、破損、または動作不具合の申告がありますか？"
+        },
+        "conditions": [
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": true,
+            "target_node": "decision_eligible"
+          },
+          {
+            "field": "answer",
+            "op": "eq",
+            "value": false,
+            "target_node": "decision_ineligible"
+          }
+        ]
+      },
+      "decision_eligible": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "返品判定結果",
+          "criteria": {
+            "eligible": "返品を承認する。"
+          }
+        },
+        "conditions": []
+      },
+      "decision_ineligible": {
+        "node_type": "inference",
+        "question": {
+          "type": "choice",
+          "instructions": "返品判定結果",
+          "criteria": {
+            "ineligible": "規約に基づき返品をお受けできません。"
+          }
+        },
+        "conditions": []
+      }
+    }
+  },
+  "pairs": [
+    {
+      "id": "ec_return_01",
+      "domain": "ec_return",
+      "base_state": "購入から20日経過した未開封の通常商品です。イメージと違ったため返品を希望します。",
+      "expected_base": "eligible",
+      "cf_state": "購入から40日経過した未開封の通常商品です。イメージと違ったため返品を希望します。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "days_exceeded_20_vs_40",
+      "notes": "未開封の通常商品における30日境界値テスト。"
+    },
+    {
+      "id": "ec_return_02",
+      "domain": "ec_return",
+      "base_state": "通常注文で先週購入したイヤホンを開封して試聴したところ、初期不良で左側から音が出ません。返品可能ですか？",
+      "expected_base": "eligible",
+      "cf_state": "クリアランスセールで購入したイヤホンを開封して試聴したところ、初期不良で左側から音が出ません。返品可能ですか？",
+      "expected_cf": "ineligible",
+      "flipped_factor": "clearance_sale_exception",
+      "notes": "初期不良があってもクリアランスセールの最優先例外条項により却下される対照ペア。"
+    },
+    {
+      "id": "ec_return_03",
+      "domain": "ec_return",
+      "base_state": "到着後5日の通常商品を開封して電源を入れましたが、通電しない初期不良がありました。",
+      "expected_base": "eligible",
+      "cf_state": "到着後5日の通常商品を開封して使ってみましたが、色合いが気に入らないので返品したいです。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "initial_defect_vs_personal_preference",
+      "notes": "開封後における初期不良と自己都合（不良なし）の反転。"
+    },
+    {
+      "id": "ec_return_04",
+      "domain": "ec_return",
+      "base_state": "商品到着からちょうど28日が経過した未開封の通常販売キーボードです。返品申請します。",
+      "expected_base": "eligible",
+      "cf_state": "商品到着からちょうど35日が経過した未開封の通常販売キーボードです。返品申請します。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "days_28_vs_35",
+      "notes": "28日と35日の境界値テスト。"
+    },
+    {
+      "id": "ec_return_05",
+      "domain": "ec_return",
+      "base_state": "通常価格で購入したモニターです。到着後2週間で未開封のまま保管していました。",
+      "expected_base": "eligible",
+      "cf_state": "アウトレットコーナーで購入したモニターです。到着後2週間で未開封のまま保管していました。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "outlet_exclusion",
+      "notes": "未開封であってもアウトレット品除外特約が適用されるテスト。"
+    },
+    {
+      "id": "ec_return_06",
+      "domain": "ec_return",
+      "base_state": "先週届いたスピーカーを開封したところ、初期傷とスピーカーコーンの破損がありました。",
+      "expected_base": "eligible",
+      "cf_state": "先週届いたスピーカーを開封して音楽を聴きましたが、音質に満足できなかったため返品したいです。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "damage_defect_vs_subjective_sound",
+      "notes": "破損不良と音質の好みの違い。"
+    },
+    {
+      "id": "ec_return_07",
+      "domain": "ec_return",
+      "base_state": "購入から10日経過した未開封状態の通常書籍です。重複購入したため返品を希望します。",
+      "expected_base": "eligible",
+      "cf_state": "購入から10日経過した開封済みで一読した通常書籍です。読み終わったため返品を希望します。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "unopened_vs_read_opened",
+      "notes": "未開封と開封済み既読の反転。"
+    },
+    {
+      "id": "ec_return_08",
+      "domain": "ec_return",
+      "base_state": "通常販売の加湿器です。届いてから3日後に開封動作確認したところ、蒸気が出ない初期故障です。",
+      "expected_base": "eligible",
+      "cf_state": "クリアランス特売の加湿器です。届いてから3日後に開封動作確認したところ、蒸気が出ない初期故障です。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "clearance_special_sale",
+      "notes": "初期故障でもセール特売除外。"
+    },
+    {
+      "id": "ec_return_09",
+      "domain": "ec_return",
+      "base_state": "到着から15日目の未開封パッケージです。注文番号を間違えたので返品受付をお願いします。",
+      "expected_base": "eligible",
+      "cf_state": "到着から50日目の未開封パッケージです。注文番号を間違えたので返品受付をお願いします。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "days_15_vs_50",
+      "notes": "長期保管（50日）による期間超過却下。"
+    },
+    {
+      "id": "ec_return_10",
+      "domain": "ec_return",
+      "base_state": "先々週購入のスマートウォッチを開封して設定しようとしましたが、液晶が点灯しない初期不良品でした。",
+      "expected_base": "eligible",
+      "cf_state": "先々週購入のスマートウォッチを開封して設定しましたが、操作方法が難しいため返品したいです。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "screen_defect_vs_usability",
+      "notes": "液晶初期不良と操作困難の対照。"
+    },
+    {
+      "id": "ec_return_11",
+      "domain": "ec_return",
+      "base_state": "通常配送で購入した未開封の文房具セットです。到着から18日目です。",
+      "expected_base": "eligible",
+      "cf_state": "通常配送で購入した未開封の文房具セットですが、到着からすでに45日経過しています。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "days_18_vs_45",
+      "notes": "未開封文具の期間経過反転。"
+    },
+    {
+      "id": "ec_return_12",
+      "domain": "ec_return",
+      "base_state": "通常注文のデスクライトです。届いて開封したところスイッチが折れていて点灯しない初期不良です。",
+      "expected_base": "eligible",
+      "cf_state": "セール特価のアウトレット品デスクライトです。届いて開封したところスイッチが折れていて点灯しない初期不良です。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "outlet_switch_broken",
+      "notes": "破損不良でもアウトレット除外。"
+    },
+    {
+      "id": "ec_return_13",
+      "domain": "ec_return",
+      "base_state": "届いてから25日目の未開封の服です。サイズを誤って注文してしまったため返品したいです。",
+      "expected_base": "eligible",
+      "cf_state": "届いてから32日目の未開封の服です。サイズを誤って注文してしまったため返品したいです。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "days_25_vs_32",
+      "notes": "30日の境界直前（25日）と直後（32日）。"
+    },
+    {
+      "id": "ec_return_14",
+      "domain": "ec_return",
+      "base_state": "通常品を購入して1週間です。未開封の外箱のまま保管しており、返品を希望します。",
+      "expected_base": "eligible",
+      "cf_state": "通常品を購入して1週間です。箱を開封して試し履きをしましたが、返品を希望します。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "unopened_vs_opened_tried",
+      "notes": "未開封と試し履き開封の対比。"
+    },
+    {
+      "id": "ec_return_15",
+      "domain": "ec_return",
+      "base_state": "通常購入したプリンターを開封しましたが、初回起動時から紙詰まりエラーが解消しない初期不良です。",
+      "expected_base": "eligible",
+      "cf_state": "クリアランスで購入したプリンターを開封しましたが、初回起動時から紙詰まりエラーが解消しない初期不良です。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "printer_clearance_sale",
+      "notes": "初回初期不良でもクリアランス対象による却下。"
+    },
+    {
+      "id": "ec_return_16",
+      "domain": "ec_return",
+      "base_state": "通常価格の未開封ソフトウェアパッケージです。購入から12日目です。",
+      "expected_base": "eligible",
+      "cf_state": "通常価格の未開封ソフトウェアパッケージですが、購入から31日が経過しています。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "days_12_vs_31",
+      "notes": "31日経過による境界却下。"
+    },
+    {
+      "id": "ec_return_17",
+      "domain": "ec_return",
+      "base_state": "到着後4日のヘッドセットを開封しましたが、マイクからノイズしか入らない初期不良が発生しています。",
+      "expected_base": "eligible",
+      "cf_state": "到着後4日のヘッドセットを開封して通話に使いましたが、装着感が合わないので返品したいです。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "mic_defect_vs_comfort",
+      "notes": "マイク初期不良と装着感の差。"
+    },
+    {
+      "id": "ec_return_18",
+      "domain": "ec_return",
+      "base_state": "標準販売の未開封コスメです。到着から14日経過しています。",
+      "expected_base": "eligible",
+      "cf_state": "アウトレット特売の未開封コスメです。到着から14日経過しています。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "cosme_outlet_exclusion",
+      "notes": "未開封コスメのアウトレット除外特約。"
+    },
+    {
+      "id": "ec_return_19",
+      "domain": "ec_return",
+      "base_state": "到着して2日目ですが、未開封のダンボールのまま未着手です。返品を受け付けてもらえますか？",
+      "expected_base": "eligible",
+      "cf_state": "到着して2日目ですが、開封して組み立て途中の状態です。自己都合で返品を受け付けてもらえますか？",
+      "expected_cf": "ineligible",
+      "flipped_factor": "unopened_vs_assembled_opened",
+      "notes": "未開封と組み立て開封の対比。"
+    },
+    {
+      "id": "ec_return_20",
+      "domain": "ec_return",
+      "base_state": "通常注文のタブレットです。到着後6日で開封したところ充電端子がぐらついて充電できない初期不良です。",
+      "expected_base": "eligible",
+      "cf_state": "セール特売のタブレットです。到着後6日で開封したところ充電端子がぐらついて充電できない初期不良です。",
+      "expected_cf": "ineligible",
+      "flipped_factor": "tablet_sale_exclusion",
+      "notes": "端子初期不良でもセール特売除外。"
+    }
+  ]
+}

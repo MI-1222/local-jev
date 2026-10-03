@@ -4,6 +4,12 @@
 """
 
 from training.config import SFTConfig
+from training.hierarchical_config import HierarchicalSFTConfig
+from training.hierarchical_loss import (
+    HierarchicalConsistencyLoss,
+    HierarchicalMultiTaskLoss,
+)
+from training.hierarchical_trainer import HierarchicalSFTTrainer
 from training.loss import (
     AsymmetricBCELoss,
     EarthMoverDistanceLoss,
@@ -46,6 +52,10 @@ from training.trainer import SFTDataset, SFTTrainer, sft_collate_fn
 __all__ = [
     "AsymmetricBCELoss",
     "EarthMoverDistanceLoss",
+    "HierarchicalConsistencyLoss",
+    "HierarchicalMultiTaskLoss",
+    "HierarchicalSFTConfig",
+    "HierarchicalSFTTrainer",
     "InfoNCEContrastiveLoss",
     "JevMultiTaskLoss",
     "LabelSmoothedFocalLoss",

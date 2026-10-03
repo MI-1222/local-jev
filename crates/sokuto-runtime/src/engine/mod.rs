@@ -15,7 +15,8 @@ pub use batch::{BatchScratchpad, DEFAULT_MAX_BATCH_CHUNK_SIZE};
 pub use coarse::{
     CandidateEmbeddingCache, CoarseScorer, CoarseToFineConfig, DEFAULT_COARSE_THRESHOLD,
     DEFAULT_NEGATIVE_KEYS, DEFAULT_TOP_M_CANDIDATES, EmbeddingCoarseScorer, FilteredCandidates,
-    LexicalCoarseScorer, filter_top_candidates, is_negative_candidate, reconstruct_probabilities,
+    HierarchicalCoarseScorer, LexicalCoarseScorer, ModelDrivenCoarseScorer, filter_top_candidates,
+    is_negative_candidate, reconstruct_probabilities,
 };
 pub use config::{ExecutionProvider, OptimizationLevel, SessionConfig};
 pub use escalation::{
