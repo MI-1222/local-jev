@@ -16,12 +16,17 @@ use utoipa::OpenApi;
 
 use crate::error::{ErrorDetail, ErrorResponse};
 use crate::handlers::ops::HealthStatusResponse;
+use crate::schema::dag::{
+    DagDefinitionDto, DagEscalationDetailDto, DagNodeDto, DagNodeTypeDto, DagRequest, DagResponse,
+    DagStepResultDto, DagUsageDto, NodeConditionDto, NodeConditionOpDto,
+};
 
 /// Jev 互換 HTTP API サーバーの OpenAPI 仕様定義。
 #[derive(OpenApi)]
 #[openapi(
     paths(
         crate::handlers::systemone::system_one_handler,
+        crate::handlers::dag::dag_handler,
         crate::handlers::ops::health_handler,
         crate::handlers::ops::ready_handler,
         crate::handlers::ops::metrics_handler,
@@ -44,6 +49,16 @@ use crate::handlers::ops::HealthStatusResponse;
             ErrorResponse,
             ErrorDetail,
             HealthStatusResponse,
+            DagRequest,
+            DagResponse,
+            DagDefinitionDto,
+            DagNodeDto,
+            DagNodeTypeDto,
+            NodeConditionDto,
+            NodeConditionOpDto,
+            DagStepResultDto,
+            DagEscalationDetailDto,
+            DagUsageDto,
         )
     ),
     tags(

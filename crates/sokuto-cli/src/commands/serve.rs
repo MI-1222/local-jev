@@ -143,7 +143,9 @@ pub async fn run_serve(args: ServeArgs) -> Result<(), Box<dyn std::error::Error 
         Arc::new(CalibrationConfig::default())
     };
 
-    let state = Arc::new(AppState::new(engine, tokenizer, calib_config));
+    let state = AppState::new(engine, tokenizer, calib_config)
+        .load_hierarchical_mapping_from_dir(&args.model_dir);
+    let state = Arc::new(state);
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
 
     sokuto_server::run_server(addr, state, prometheus_handle).await?;

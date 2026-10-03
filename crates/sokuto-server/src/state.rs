@@ -6,7 +6,10 @@ use std::sync::Arc;
 
 use sokuto_core::contract::calibration::CalibrationConfig;
 use sokuto_core::gating::GatingConfig;
+use sokuto_runtime::dag::InProcessDagExecutor;
 use sokuto_runtime::engine::{CoarseToFineConfig, InferenceEngine};
+use sokuto_runtime::hierarchical::HierarchicalRouterConfig;
+use sokuto_runtime::hierarchical::mapping::HierarchicalMapping;
 use sokuto_runtime::tokenizer::JevTokenizer;
 
 use crate::guardrails::{GuardrailConfig, GuardrailPipeline};
@@ -36,6 +39,14 @@ pub struct AppState {
     pub guardrail_pipeline: GuardrailPipeline,
     /// 確信度ゲーティング処理設定。
     pub gating_config: GatingConfig,
+    /// インプロセス DAG 実行器(反事実・マイクロ決定グラフ向け)。
+    pub dag_executor: Arc<InProcessDagExecutor>,
+    /// 大分類・細分類オントロジー定義(存在する場合)。
+    pub hierarchical_mapping: Option<Arc<HierarchicalMapping>>,
+    /// 粗密二段階階層ルーティング設定。
+    pub hierarchical_config: HierarchicalRouterConfig,
+    /// 透過的粗密ルーティングモードの有効フラグ。
+    pub auto_hierarchical: bool,
 }
 
 impl AppState {
@@ -54,6 +65,16 @@ impl AppState {
         guardrail_config.limits.max_questions = DEFAULT_MAX_QUESTIONS_PER_REQUEST;
         let guardrail_pipeline = GuardrailPipeline::new(guardrail_config);
 
+        let auto_hierarchical = std::env::var("SOKUTO_AUTO_HIERARCHICAL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let dag_executor = Arc::new(InProcessDagExecutor::new(
+            Arc::clone(&engine),
+            Arc::clone(&tokenizer),
+            (*calib_config).clone(),
+        ));
+
         Self {
             engine,
             tokenizer,
@@ -66,6 +87,10 @@ impl AppState {
                 enabled: false,
                 ..Default::default()
             },
+            dag_executor,
+            hierarchical_mapping: None,
+            hierarchical_config: HierarchicalRouterConfig::default(),
+            auto_hierarchical,
         }
     }
 
@@ -82,6 +107,16 @@ impl AppState {
         guardrail_config.limits.max_questions = max_questions_per_request;
         let guardrail_pipeline = GuardrailPipeline::new(guardrail_config);
 
+        let auto_hierarchical = std::env::var("SOKUTO_AUTO_HIERARCHICAL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let dag_executor = Arc::new(InProcessDagExecutor::new(
+            Arc::clone(&engine),
+            Arc::clone(&tokenizer),
+            (*calib_config).clone(),
+        ));
+
         Self {
             engine,
             tokenizer,
@@ -94,6 +129,10 @@ impl AppState {
                 enabled: false,
                 ..Default::default()
             },
+            dag_executor,
+            hierarchical_mapping: None,
+            hierarchical_config: HierarchicalRouterConfig::default(),
+            auto_hierarchical,
         }
     }
 
@@ -107,6 +146,16 @@ impl AppState {
         chunk_size: usize,
         guardrail_config: GuardrailConfig,
     ) -> Self {
+        let auto_hierarchical = std::env::var("SOKUTO_AUTO_HIERARCHICAL")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let dag_executor = Arc::new(InProcessDagExecutor::new(
+            Arc::clone(&engine),
+            Arc::clone(&tokenizer),
+            (*calib_config).clone(),
+        ));
+
         Self {
             engine,
             tokenizer,
@@ -119,12 +168,64 @@ impl AppState {
                 enabled: false,
                 ..Default::default()
             },
+            dag_executor,
+            hierarchical_mapping: None,
+            hierarchical_config: HierarchicalRouterConfig::default(),
+            auto_hierarchical,
         }
     }
 
     /// ゲーティング設定をカスタマイズして設定する。
     pub fn with_gating_config(mut self, gating_config: GatingConfig) -> Self {
         self.gating_config = gating_config;
+        self
+    }
+
+    /// 階層オントロジーマッピングを設定する。
+    pub fn with_hierarchical_mapping(mut self, mapping: Arc<HierarchicalMapping>) -> Self {
+        self.hierarchical_mapping = Some(mapping);
+        self
+    }
+
+    /// 粗密階層ルーティング設定をカスタマイズして設定する。
+    pub fn with_hierarchical_config(mut self, config: HierarchicalRouterConfig) -> Self {
+        self.hierarchical_config = config;
+        self
+    }
+
+    /// 透過的粗密ルーティングモードの有効化を設定する。
+    pub fn with_auto_hierarchical(mut self, enabled: bool) -> Self {
+        self.auto_hierarchical = enabled;
+        self
+    }
+
+    /// カスタム DAG 実行器を設定する。
+    pub fn with_dag_executor(mut self, executor: Arc<InProcessDagExecutor>) -> Self {
+        self.dag_executor = executor;
+        self
+    }
+
+    /// 指定ディレクトリ内の `hierarchical_mapping.json` を読み込み、存在すれば登録する。
+    pub fn load_hierarchical_mapping_from_dir<P: AsRef<std::path::Path>>(mut self, dir: P) -> Self {
+        let mapping_path = dir.as_ref().join("hierarchical_mapping.json");
+        if mapping_path.exists()
+            && let Ok(content) = std::fs::read_to_string(&mapping_path)
+        {
+            if let Ok(mapping) = serde_json::from_str::<HierarchicalMapping>(&content) {
+                if mapping.validate().is_ok() {
+                    tracing::info!("粗密階層マッピングをロードしました: {}", mapping.name);
+                    self.hierarchical_mapping = Some(Arc::new(mapping));
+                } else {
+                    tracing::warn!("階層マッピングの検証に失敗しました: {:?}", mapping_path);
+                }
+            } else {
+                tracing::warn!(
+                    "階層マッピング JSON のパースに失敗しました: {:?}",
+                    mapping_path
+                );
+            }
+        }
+
         self
     }
 

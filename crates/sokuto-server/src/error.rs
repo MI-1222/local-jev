@@ -64,6 +64,10 @@ pub enum ServerError {
     #[error("推論エンジン障害: {0}")]
     Runtime(#[from] RuntimeError),
 
+    /// DAG 実行エラー。
+    #[error("DAG 実行エラー: {0}")]
+    Dag(#[from] sokuto_runtime::dag::DagError),
+
     /// サーバー内部の不整合・障害。
     #[error("サーバー内部エラー: {0}")]
     Internal(String),
@@ -108,6 +112,59 @@ impl IntoResponse for ServerError {
                     "inference_engine_error",
                     format!("推論エンジンでエラーが発生しました: {runtime_err}"),
                 )
+            }
+            ServerError::Dag(dag_err) => {
+                use sokuto_runtime::dag::DagError;
+                match dag_err {
+                    DagError::Validation(v) => (
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request_error",
+                        "dag_validation_error",
+                        v.to_string(),
+                    ),
+                    DagError::Pool(p) => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "service_unavailable",
+                        "pool_error",
+                        p.to_string(),
+                    ),
+                    DagError::Timeout(ms) => (
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "gateway_timeout",
+                        "dag_timeout",
+                        format!("DAG 実行がタイムアウトしました ({ms}ms)。"),
+                    ),
+                    DagError::StepLimitExceeded(max) => (
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request_error",
+                        "step_limit_exceeded",
+                        format!("DAG 実行ステップ数が上限 ({max}) を超過しました。"),
+                    ),
+                    DagError::NodeNotFound(node) => (
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request_error",
+                        "node_not_found",
+                        format!("ノード '{node}' が見つかりません。"),
+                    ),
+                    DagError::Runtime(r) => {
+                        tracing::error!("DAG 推論ランタイムエラー: {:?}", r);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal_server_error",
+                            "inference_engine_error",
+                            format!("DAG 推論エンジンでエラーが発生しました: {r}"),
+                        )
+                    }
+                    DagError::ExecutionFailed(msg) => {
+                        tracing::error!("DAG 実行失敗: {}", msg);
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal_server_error",
+                            "dag_execution_failed",
+                            msg,
+                        )
+                    }
+                }
             }
             ServerError::Internal(msg) => {
                 tracing::error!("サーバー内部エラーが発生しました: {}", msg);

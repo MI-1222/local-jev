@@ -38,6 +38,16 @@ fn test_openapi_spec_generation_and_components() {
         "ErrorResponse",
         "ErrorDetail",
         "HealthStatusResponse",
+        "DagRequest",
+        "DagResponse",
+        "DagDefinitionDto",
+        "DagNodeDto",
+        "DagNodeTypeDto",
+        "NodeConditionDto",
+        "NodeConditionOpDto",
+        "DagStepResultDto",
+        "DagEscalationDetailDto",
+        "DagUsageDto",
     ];
 
     for schema_name in required_schemas {
@@ -46,6 +56,11 @@ fn test_openapi_spec_generation_and_components() {
             "スキーマ '{schema_name}' が OpenAPI 仕様書に含まれていません。"
         );
     }
+
+    assert!(
+        spec.paths.paths.contains_key("/v1/systemone/dag"),
+        "エンドポイント '/v1/systemone/dag' が OpenAPI 仕様書に含まれていません。"
+    );
 }
 
 #[test]
@@ -327,4 +342,92 @@ fn test_system_routing_summary_schema_parity() {
     assert_eq!(json_val["confirm_count"], 1);
     assert_eq!(json_val["fallback_count"], 1);
     assert_eq!(json_val["escalation_needed"], true);
+}
+
+#[test]
+fn test_dag_schema_and_roundtrip_parity() {
+    use sokuto_server::schema::dag::{
+        DagDefinitionDto, DagNodeDto, DagNodeTypeDto, DagRequest, DagResponse, DagUsageDto,
+        NodeConditionDto, NodeConditionOpDto,
+    };
+
+    let spec = generate_openapi_spec();
+    let spec_json = serde_json::to_value(&spec).expect("JSON シリアライズに成功すること。");
+
+    let dag_req_schema = &spec_json["components"]["schemas"]["DagRequest"];
+    assert!(dag_req_schema["properties"].get("dag").is_some());
+    assert!(dag_req_schema["properties"].get("state").is_some());
+
+    let dag_res_schema = &spec_json["components"]["schemas"]["DagResponse"];
+    assert!(dag_res_schema["properties"].get("status").is_some());
+    assert!(dag_res_schema["properties"].get("execution_path").is_some());
+    assert!(dag_res_schema["properties"].get("usage").is_some());
+
+    // JSON ラウンドトリップの検証
+    let mut nodes = indexmap::IndexMap::new();
+    nodes.insert(
+        "step1".to_string(),
+        DagNodeDto {
+            node_type: DagNodeTypeDto::Inference,
+            question: Some(Question::new_noul("テスト質問")),
+            conditions: vec![NodeConditionDto {
+                field: "answer".to_string(),
+                op: NodeConditionOpDto::Eq,
+                value: Some(serde_json::Value::Bool(true)),
+                target_node: "escalate".to_string(),
+            }],
+            parallel_nodes: Vec::new(),
+            join_node: None,
+            reason: None,
+        },
+    );
+    nodes.insert(
+        "escalate".to_string(),
+        DagNodeDto {
+            node_type: DagNodeTypeDto::Escalate,
+            question: None,
+            conditions: Vec::new(),
+            parallel_nodes: Vec::new(),
+            join_node: None,
+            reason: Some("不確実性によるエスカレーション".to_string()),
+        },
+    );
+
+    let dag_req = DagRequest {
+        state: serde_json::json!("テストコンテキスト"),
+        dag: DagDefinitionDto {
+            dag_id: "test_dag_1".to_string(),
+            timeout_ms: 100,
+            entry_node: "step1".to_string(),
+            nodes,
+        },
+        timeout_ms: Some(150),
+    };
+
+    let serialized = serde_json::to_string(&dag_req).expect("シリアライズ成功すること。");
+    let deserialized: DagRequest =
+        serde_json::from_str(&serialized).expect("デシリアライズ成功すること。");
+    assert_eq!(deserialized.dag.dag_id, "test_dag_1");
+    assert_eq!(deserialized.timeout_ms, Some(150));
+
+    let dag_res = DagResponse {
+        dag_id: "test_dag_1".to_string(),
+        status: "completed".to_string(),
+        final_node: Some("step1".to_string()),
+        final_decision: None,
+        execution_path: vec!["step1".to_string()],
+        steps: indexmap::IndexMap::new(),
+        escalation: None,
+        usage: DagUsageDto {
+            total_duration_ms: 12.5,
+            steps_executed: 1,
+            completion_tokens: 0,
+        },
+    };
+
+    let serialized_res = serde_json::to_string(&dag_res).expect("シリアライズ成功すること。");
+    let deserialized_res: DagResponse =
+        serde_json::from_str(&serialized_res).expect("デシリアライズ成功すること。");
+    assert_eq!(deserialized_res.status, "completed");
+    assert_eq!(deserialized_res.usage.completion_tokens, 0);
 }
